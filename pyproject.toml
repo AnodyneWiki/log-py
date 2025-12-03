@@ -1,0 +1,18 @@
+[project]
+name = "log-py"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "requests>=2.32.5",
+    "rich>=14.2.0",
+    "typer>=0.20.0",
+]
+
+# [project.scripts]
+# logpy = "main:app"
+
+# [build-system]
+# requires = ["uv_build"]
+# build-backend = "uv_build"
