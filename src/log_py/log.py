@@ -51,7 +51,9 @@ def log_ingestion(
         f" [{salt}]" if salt else ""
     ) + f" via {roa}" + (
         f" at {site} site" if site else ""
-    ) + f" {note}" if note else ""
+    ) + (
+        f"\n> {note}" if note else ""
+    )
 
     try:
         p = requests.post(webhook, json={ "content": logline, "flags": 4})
