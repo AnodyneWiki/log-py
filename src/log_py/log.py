@@ -57,6 +57,7 @@ def log_ingestion(
 
     try:
         p = requests.post(webhook, json={ "content": logline, "flags": 4})
+        p.raise_for_status
         con.print(f"Status: {p.status_code}")
     except Exception as e:
         con.print(f"Webhook failed: {e}", style="bold red")
