@@ -10,9 +10,9 @@ dependencies = [
     "typer>=0.20.0",
 ]
 
-# [project.scripts]
-# logpy = "main:app"
+[project.scripts]
+logpy = "log_py:app"
 
-# [build-system]
-# requires = ["uv_build"]
-# build-backend = "uv_build"
+[build-system]
+requires = ["uv_build"]
+build-backend = "uv_build"

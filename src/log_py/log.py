@@ -58,5 +58,3 @@ def main(
         con.print(f"Status: {p.status_code}")
     except Exception as e:
         con.print(f"Webhook failed: {e}", style="bold red")
-
-app()
