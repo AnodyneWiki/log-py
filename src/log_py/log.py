@@ -12,15 +12,15 @@ app = typer.Typer()
 
 @app.command()
 def log_ingestion(
-    logfile: Annotated[Path, typer.Option("--csv", "-c")],
-    user: Annotated[str, typer.Option("--user", "-u")],
-    substance: Annotated[str, typer.Option("--substance", "-s")],
+    logfile: Annotated[Path, typer.Option("--csv", "-c", help="File to write logs to")],
+    user: Annotated[str, typer.Option("--user", "-u", help="username")],
+    substance: Annotated[str, typer.Option("--substance", "-s", help="substance to log")],
     dosage: Annotated[str, typer.Option("--dosage", "-d", help="dosage and unit")],
-    roa: Annotated[str, typer.Option("--roa", "-r")],
-    salt: Annotated[str | None, typer.Option("--salt", "-sa")] = None,
+    roa: Annotated[str, typer.Option("--roa", "-r", help="route of administration")],
+    salt: Annotated[str | None, typer.Option("--salt", "-sa", help="salt form")] = None,
     site: Annotated[str | None, typer.Option("--site", "-si", help="site of administration")] = None,
-    webhook: Annotated[str | None, typer.Option("--webhook", "-w")] = None,
-    note: Annotated[str | None, typer.Option("--note", "-n")] = None
+    webhook: Annotated[str | None, typer.Option("--webhook", "-w", help="discord webhook url")] = None,
+    note: Annotated[str | None, typer.Option("--note", "-n", help="note added to discord message")] = None
 ):
     time_now = datetime.now(timezone.utc).isoformat(timespec='milliseconds')
 
