@@ -38,8 +38,7 @@ def main(
         substance_md: str = f"[{title}](https://anodyne.wiki/substance/{title.replace(" ", "_")})"
     except Exception as e:
         con.print(e)
-        title = substance
-        substance_md = substance
+        title, substance_md = substance
 
     with open(logfile, "w", newline="") as of:
         log = csv.writer(of)
@@ -48,15 +47,16 @@ def main(
     if not webhook:
         return
 
-    logline = f"{user}: {dosage} {substance_md}{
+    logline = f"{user}: {dosage} {substance_md}" + (
         f" [{salt}]" if salt else ""
-    } via {roa}{
+    ) + f" via {roa}" + (
         f" at {site} site" if site else ""
-    }{
-        f" {note}" if note else ""
-    }"
+    ) + f" {note}" if note else ""
 
-    p = requests.post(webhook, json={ "content": logline, "flags": 4})
-    con.print(f"Status: {p.status_code}")
+    try:
+        p = requests.post(webhook, json={ "content": logline, "flags": 4})
+        con.print(f"Status: {p.status_code}")
+    except Exception as e:
+        con.print(f"Webhook failed: {e}", style="bold red")
 
 app()
