@@ -1,3 +1,3 @@
-from .log import app, main
+from .log import app, log_ingestion
 
-__all__ = ["app", "main"]
+__all__ = ["app", "log_ingestion"]

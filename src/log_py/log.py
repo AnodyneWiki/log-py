@@ -11,7 +11,7 @@ con = Console()
 app = typer.Typer()
 
 @app.command()
-def main(
+def log_ingestion(
     logfile: Annotated[Path, typer.Option("--csv", "-c")],
     user: Annotated[str, typer.Option("--user", "-u")],
     substance: Annotated[str, typer.Option("--substance", "-s")],
