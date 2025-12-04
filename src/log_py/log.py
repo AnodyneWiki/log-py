@@ -40,7 +40,7 @@ def log_ingestion(
         con.print(e)
         title, substance_md = substance
 
-    with open(logfile, "w", newline="") as of:
+    with open(logfile, "a", newline="") as of:
         log = csv.writer(of)
         log.writerow([time_now, user, title, dosage, roa, site, salt])
 
