@@ -8,6 +8,7 @@ import requests
 from rich.console import Console
 
 con = Console()
+err_con = Console(stderr=True)
 app = typer.Typer()
 
 @app.command()
@@ -23,22 +24,24 @@ def log_ingestion(
     note: Annotated[str | None, typer.Option("--note", "-n", help="note added to discord message")] = None
 ):
     time_now = datetime.now(timezone.utc).isoformat(timespec='milliseconds')
+    title = substance_md = substance
 
     if not logfile.exists():
         logfile.touch()
-        con.print(f"File {logfile} has been created.", style="blue")
+        con.print(f"File {logfile} has been created.")
 
     try:
         r = requests.get(f"https://anodyne.wiki/api/substance/{substance}")
-        r.raise_for_status
+        r.raise_for_status()
         if "NotFound" in r.json() and r.json()["NotFound"]:
-            raise
+            raise ValueError
 
         title: str = r.json()["Title"] if isinstance(r.json()["Title"], str) else substance
         substance_md: str = f"[{title}](https://anodyne.wiki/substance/{title.replace(" ", "_")})"
-    except Exception as e:
-        con.print(e)
-        title, substance_md = substance
+    except ValueError:
+        err_con.print(f"Substance '{substance}' not found on AnodyneWiki", style="bold yellow")
+    except Exception:
+        err_con.print_exception()
 
     with open(logfile, "a", newline="") as of:
         log = csv.writer(of)
@@ -57,7 +60,7 @@ def log_ingestion(
 
     try:
         p = requests.post(webhook, json={ "content": logline, "flags": 4})
-        p.raise_for_status
+        p.raise_for_status()
         con.print(f"Status: {p.status_code}")
     except Exception as e:
-        con.print(f"Webhook failed: {e}", style="bold red")
+        err_con.print(f"Webhook failed: '{e}'", style="bold yellow")
