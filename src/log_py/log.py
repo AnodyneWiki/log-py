@@ -5,28 +5,72 @@ from typing import Annotated
 
 import typer
 import requests
+from pydantic import BaseModel, HttpUrl
+from typer_config import toml_loader, conf_callback_factory
 from rich.console import Console
 
 con = Console()
 err_con = Console(stderr=True)
-app = typer.Typer()
+app = typer.Typer(add_completion=False)
+
+class LogConfig(BaseModel):
+    user: str | None = None
+    logfile: Path | None = None
+    webhook: HttpUrl | None = None
+
+def _validate_config(param_value: Path | None):
+    default_conf = Path(typer.get_app_dir("logpy")) / "config.toml"
+    if not default_conf.exists():
+        default_conf.parent.mkdir(parents=True)
+        default_conf.touch()
+
+    if not param_value:
+        conf = toml_loader(default_conf)
+    else:
+        conf = toml_loader(param_value)
+
+    _ = LogConfig.model_validate(conf)
+    return conf
 
 @app.command()
 def log_ingestion(
-    logfile: Annotated[Path, typer.Option("--csv", "-c", help="File to write logs to")],
-    user: Annotated[str, typer.Option("--user", "-u", help="username")],
-    substance: Annotated[str, typer.Option("--substance", "-s", help="substance to log")],
-    dosage: Annotated[str, typer.Option("--dosage", "-d", help="dosage and unit")],
-    roa: Annotated[str, typer.Option("--roa", "-r", help="route of administration")],
+    substance: Annotated[str, typer.Argument(help="substance to log")],
+    dosage: Annotated[str, typer.Argument(help="dosage and unit")],
+    roa: Annotated[str, typer.Argument(help="route of administration")],
+    logfile: Annotated[Path, typer.Option(
+        "--csv",
+        help="File to write logs to",
+        rich_help_panel="Configuration Options"
+    )],
+    user: Annotated[str, typer.Option(
+        "--user", "-u",
+        help="username",
+        rich_help_panel="Configuration Options"
+    )],
     salt: Annotated[str | None, typer.Option("--salt", "-sa", help="salt form")] = None,
     site: Annotated[str | None, typer.Option("--site", "-si", help="site of administration")] = None,
-    webhook: Annotated[str | None, typer.Option("--webhook", "-w", help="discord webhook url")] = None,
-    note: Annotated[str | None, typer.Option("--note", "-n", help="note added to discord message")] = None
+    note: Annotated[str | None, typer.Option("--note", "-n", help="note added to discord message")] = None,
+    webhook: Annotated[HttpUrl | None, typer.Option(
+        "--webhook", "-w",
+        parser=HttpUrl,
+        help="discord webhook url",
+        rich_help_panel="Configuration Options"
+    )] = None,
+    config: Annotated[Path | None, typer.Option(
+        "--config", "-c",
+        callback=conf_callback_factory(_validate_config),
+        show_default=str(Path(typer.get_app_dir("logpy")) / "config.toml"),
+        envvar="LOGPY_CONFIG",
+        help="configuration file",
+        rich_help_panel="Configuration Options",
+        is_eager=True,
+    )] = None
 ):
     time_now = datetime.now(timezone.utc).isoformat(timespec='milliseconds')
     title = substance_md = substance
 
     if not logfile.exists():
+        logfile.parent.mkdir(parents=True)
         logfile.touch()
         con.print(f"File {logfile} has been created.")
 
@@ -59,7 +103,7 @@ def log_ingestion(
     )
 
     try:
-        p = requests.post(webhook, json={ "content": logline, "flags": 4})
+        p = requests.post(webhook.encoded_string(), json={ "content": logline, "flags": 4})
         p.raise_for_status()
         con.print(f"Status: {p.status_code}")
     except Exception as e:
