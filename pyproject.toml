@@ -5,9 +5,11 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "pydantic>=2.12.5",
     "requests>=2.32.5",
     "rich>=14.2.0",
     "typer>=0.20.0",
+    "typer-config>=1.4.3",
 ]
 
 [project.scripts]
