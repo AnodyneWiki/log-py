@@ -5,23 +5,30 @@ from typing import Annotated
 
 import typer
 import requests
-from pydantic import BaseModel, HttpUrl
+from pydantic import BaseModel, HttpUrl, field_validator
 from typer_config import toml_loader, conf_callback_factory
 from rich.console import Console
 
 con = Console()
 err_con = Console(stderr=True)
 app = typer.Typer(add_completion=False)
+app_dir = Path(typer.get_app_dir("logpy"))
 
 class LogConfig(BaseModel):
     user: str | None = None
     logfile: Path | None = None
     webhook: HttpUrl | None = None
 
+    @field_validator("logfile", mode="after")
+    def valiadte_path(cls, logfile: Path):
+        if not logfile.is_absolute():
+            return app_dir / logfile
+        return logfile
+
 def _validate_config(param_value: Path | None):
-    default_conf = Path(typer.get_app_dir("logpy")) / "config.toml"
+    default_conf = app_dir / "config.toml"
     if not default_conf.exists():
-        default_conf.parent.mkdir(parents=True)
+        default_conf.parent.mkdir(parents=True, exist_ok=True)
         default_conf.touch()
 
     if not param_value:
@@ -29,8 +36,7 @@ def _validate_config(param_value: Path | None):
     else:
         conf = toml_loader(param_value)
 
-    _ = LogConfig.model_validate(conf)
-    return conf
+    return LogConfig.model_validate(conf).model_dump()
 
 @app.command()
 def log_ingestion(
@@ -70,9 +76,9 @@ def log_ingestion(
     title = substance_md = substance
 
     if not logfile.exists():
-        logfile.parent.mkdir(parents=True)
+        logfile.parent.mkdir(parents=True, exist_ok=True)
         logfile.touch()
-        con.print(f"File {logfile} has been created.")
+        con.print(f"File '{logfile}' has been created.")
 
     try:
         r = requests.get(f"https://anodyne.wiki/api/substance/{substance}")
