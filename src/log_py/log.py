@@ -11,7 +11,7 @@ from rich.console import Console
 
 con = Console()
 err_con = Console(stderr=True)
-app = typer.Typer(add_completion=False)
+app = typer.Typer(add_completion=True, no_args_is_help=True)
 app_dir = Path(typer.get_app_dir("logpy"))
 
 class LogConfig(BaseModel):
@@ -21,6 +21,7 @@ class LogConfig(BaseModel):
 
     @field_validator("logfile", mode="after")
     def valiadte_path(cls, logfile: Path):
+        logfile = logfile.expanduser()
         if not logfile.is_absolute():
             return app_dir / logfile
         return logfile
