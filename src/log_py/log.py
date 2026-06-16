@@ -1,6 +1,6 @@
 import csv
 import dateparser
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated
 
@@ -93,7 +93,9 @@ def log_ingestion(
         is_eager=True,
     )] = None
 ):
-    time_now = _parse_ingestion_time(" ".join(time) if time else None).isoformat(timespec='milliseconds')
+    ingestion_time = _parse_ingestion_time(" ".join(time) if time else None)
+    time_now = ingestion_time.isoformat(timespec='milliseconds')
+    is_backdated = datetime.now(timezone.utc) - ingestion_time > timedelta(minutes=10)
     title = substance_md = substance
 
     if not logfile.exists():
@@ -127,6 +129,8 @@ def log_ingestion(
         f" at {site} site" if site else ""
     ) + (
         f"\n> {note}" if note else ""
+    ) + (
+        f"\n> {time_now}" if is_backdated else ""
     )
 
     try:
