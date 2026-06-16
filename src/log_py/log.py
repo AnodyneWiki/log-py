@@ -1,4 +1,5 @@
 import csv
+import dateparser
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
@@ -25,6 +26,22 @@ class LogConfig(BaseModel):
         if not logfile.is_absolute():
             return app_dir / logfile
         return logfile
+
+def _parse_ingestion_time(time_str: str | None) -> datetime:
+    if time_str is None:
+        return datetime.now(timezone.utc)
+    parsed: datetime | None = dateparser.parse(
+        time_str,
+        settings={
+            "RETURN_AS_TIMEZONE_AWARE": True,
+            "TO_TIMEZONE": "UTC",
+            "PREFER_DATES_FROM": "past",
+        },
+    )
+    if parsed is None:
+        raise typer.BadParameter(f"Could not parse '{time_str}' as a date/time")
+    return parsed.astimezone(timezone.utc)
+
 
 def _validate_config(param_value: Path | None):
     default_conf = app_dir / "config.toml"
@@ -57,6 +74,9 @@ def log_ingestion(
     salt: Annotated[str | None, typer.Option("--salt", "-sa", help="salt form")] = None,
     site: Annotated[str | None, typer.Option("--site", "-si", help="site of administration")] = None,
     note: Annotated[str | None, typer.Option("--note", "-n", help="note added to discord message")] = None,
+    time: Annotated[list[str] | None, typer.Argument(
+        help="ingestion time, e.g. 'two hours ago' or '2025-12-04 10:00'"
+    )] = None,
     webhook: Annotated[HttpUrl | None, typer.Option(
         "--webhook", "-w",
         parser=HttpUrl,
@@ -73,7 +93,7 @@ def log_ingestion(
         is_eager=True,
     )] = None
 ):
-    time_now = datetime.now(timezone.utc).isoformat(timespec='milliseconds')
+    time_now = _parse_ingestion_time(" ".join(time) if time else None).isoformat(timespec='milliseconds')
     title = substance_md = substance
 
     if not logfile.exists():
