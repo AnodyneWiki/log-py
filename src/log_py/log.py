@@ -113,6 +113,7 @@ def log_ingestion(
         substance_md: str = f"[{title}](https://anodyne.wiki/substance/{title.replace(" ", "_")})"
     except ValueError:
         err_con.print(f"Substance '{substance}' not found on AnodyneWiki", style="bold yellow")
+        _ = typer.confirm("Log anyway?", abort=True)
     except Exception:
         err_con.print_exception()
 
