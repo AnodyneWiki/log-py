@@ -96,7 +96,7 @@ def log_ingestion(
 
     with open(logfile, "a", newline="") as of:
         log = csv.writer(of)
-        log.writerow([time_now, user, title, dosage, roa, site, salt])
+        log.writerow([time_now, user, title, dosage, roa, site, salt, note])
 
     if not webhook:
         return
