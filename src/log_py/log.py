@@ -17,6 +17,7 @@ app_dir = Path(typer.get_app_dir("logpy"))
 
 class LogConfig(BaseModel):
     user: str | None = None
+    userpage: str | None = None
     logfile: Path | None = None
     webhook: HttpUrl | None = None
 
@@ -71,6 +72,11 @@ def log_ingestion(
         help="username",
         rich_help_panel="Configuration Options"
     )],
+    userpage: Annotated[str | None, typer.Option(
+        "--userpage", "-up",
+        help="url linked to the username in the discord message",
+        rich_help_panel="Configuration Options"
+    )] = None,
     salt: Annotated[str | None, typer.Option("--salt", "-sa", help="salt form")] = None,
     site: Annotated[str | None, typer.Option("--site", "-si", help="site of administration")] = None,
     note: Annotated[str | None, typer.Option("--note", "-n", help="note added to discord message")] = None,
@@ -124,7 +130,8 @@ def log_ingestion(
     if not webhook:
         return
 
-    logline = f"{user}: {dosage} {substance_md}" + (
+    user_md = f"[{user}]({userpage})" if userpage else user
+    logline = f"{user_md}: {dosage} {substance_md}" + (
         f" [{salt}]" if salt else ""
     ) + f" via {roa}" + (
         f" at {site} site" if site else ""
