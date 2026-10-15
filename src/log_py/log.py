@@ -33,21 +33,32 @@ SUPPLY_CACHE_FILE = app_dir / "supplies.json"
 SUPPLY_CACHE_VERSION = 1
 STASH_CACHE_FILE = app_dir / "stash.json"
 STASH_CACHE_VERSION = 1
-DONE_SUBSTANCE_CHOICE = "None"
-UNKNOWN_SUBSTANCE_CHOICE = "Unknown"
-UNKNOWN_SITE_CHOICE = "Unknown"
-UNKNOWN_VOLUME_CHOICE = "unknown"
-UNKNOWN_GAUGE_CHOICE = "unknown"
-UNKNOWN_LENGTH_CHOICE = "unknown"
+WEBHOOK_MESSAGE_CACHE_FILE = app_dir / "webhook-messages.json"
+WEBHOOK_MESSAGE_CACHE_VERSION = 1
+SKIP_CHOICE = "Skip"
+LEGACY_UNKNOWN_CHOICE = "Unknown"
+UNKNOWN_SUBSTANCE_TITLE = "Unknown"
+DONE_SUBSTANCE_CHOICE = ">"
+UNKNOWN_SUBSTANCE_CHOICE = LEGACY_UNKNOWN_CHOICE
+UNKNOWN_SITE_CHOICE = SKIP_CHOICE
+UNKNOWN_VOLUME_CHOICE = SKIP_CHOICE
+UNKNOWN_GAUGE_CHOICE = SKIP_CHOICE
+UNKNOWN_LENGTH_CHOICE = SKIP_CHOICE
 EMPTY_NOTE_CHOICE = "No note"
 NOW_TIME_CHOICE = "now"
-BACK_CHOICE = "back"
+BACK_CHOICE = "<"
 MENU_CUSTOM_PREFIX = "~"
 ACTION_LOG_INGESTION = "Add ingestion"
 ACTION_EDIT_SUPPLY_STACK = "Supplies"
 ACTION_EDIT_STASH = "Stash"
 ACTION_SETTINGS = "Settings"
 ACTION_STATISTICS = "Statistics"
+ACTION_HISTORY = "History"
+HISTORY_PAGE_SIZE = 100
+HISTORY_NEXT_CHOICE = f"Next {HISTORY_PAGE_SIZE}"
+HISTORY_EDIT_CHOICE = "Edit"
+HISTORY_REMOVE_CHOICE = "Remove"
+LOG_COLUMNS = ["timestamp", "user", "substance", "dosage", "roa", "site", "salt", "note"]
 SUPPLY_ACTION_ADD = "Add"
 SUPPLY_ACTION_REMOVE = "Remove"
 SUPPLY_ACTION_ADD_NEW = "Add new"
@@ -57,7 +68,8 @@ SUPPLY_ACTION_SPECIFY_NEW_SYRINGE = "Specify a new syringe type"
 SUPPLY_ACTION_SPECIFY_NEW_NEEDLE = "Specify a new needle type"
 SUPPLY_ACTION_REUSE_SYRINGE = "Reuse syringe"
 SUPPLY_ACTION_REUSE_NEEDLE = "Reuse needle"
-SUPPLY_ACTION_DONE = "Done"
+SUPPLY_ACTION_SKIP = SKIP_CHOICE
+SUPPLY_ACTION_BACK = BACK_CHOICE
 NON_DISPOSABLE_SYRINGE_TOKEN = "non-disposable"
 # Populated only from AnodyneWiki API responses cached in SUBSTANCE_CACHE_FILE.
 SUBSTANCE_ALIASES: dict[str, list[str]] = {}
@@ -79,12 +91,19 @@ EXTRA_INFO_ALIASES = {
     "No": ["n"],
     "Yes": ["y"],
 }
+EXTRA_INFO_SKIP_CHOICE = "Skip"
+EXTRA_INFO_SHOW_CHOICE = "Show"
+EXTRA_INFO_CHOICE_ALIASES = {
+    EXTRA_INFO_SKIP_CHOICE: [],
+    EXTRA_INFO_SHOW_CHOICE: [],
+}
 ACTION_ALIASES = {
     ACTION_LOG_INGESTION: ["log", "ingestion", "li"],
     ACTION_EDIT_SUPPLY_STACK: ["supply", "stack", "edit supply", "ess"],
     ACTION_EDIT_STASH: ["stash", "substance stash", "edit stash"],
     ACTION_SETTINGS: ["settings", "config", "preferences"],
     ACTION_STATISTICS: ["statistics", "stats"],
+    ACTION_HISTORY: ["history", "logs"],
 }
 STATISTICS_TIMESCALE_DAILY = "daily"
 STATISTICS_TIMESCALE_WEEKLY = "weekly"
@@ -102,7 +121,7 @@ SUPPLY_ACTION_ALIASES = {
     SUPPLY_ACTION_SPECIFY_NEW_NEEDLE: ["new needle", "specify needle"],
     SUPPLY_ACTION_REUSE_SYRINGE: ["reuse syringe", "reused syringe", "rs"],
     SUPPLY_ACTION_REUSE_NEEDLE: ["reuse needle", "reused needle", "rn"],
-    SUPPLY_ACTION_DONE: ["done", "quit", "exit"],
+    SUPPLY_ACTION_SKIP: [],
 }
 EXTRA_INFO_PROMPT = "Extra options? (note, time, dosage by volume)"
 
@@ -638,7 +657,15 @@ def _coalesce(*values: str | None) -> str | None:
 
 
 def _alias_key(value: str) -> str:
-    return "".join(char for char in value.casefold() if char.isalnum())
+    stripped = value.strip()
+    key = "".join(char for char in stripped.casefold() if char.isalnum())
+    return key or stripped
+
+
+def _is_skip_choice(value: str | None) -> bool:
+    if not value:
+        return False
+    return _alias_key(value) in (_alias_key(SKIP_CHOICE), _alias_key(LEGACY_UNKNOWN_CHOICE))
 
 
 def _supply_key_part(value: str) -> str:
@@ -699,6 +726,7 @@ def _menu_candidates(
     candidates: list[str],
     aliases: dict[str, list[str]] | None = None,
     labels_by_value: dict[str, str] | None = None,
+    keep_custom_prefix: bool = False,
 ) -> tuple[list[str], dict[str, str]]:
     aliases = aliases or {}
     labels_by_value = labels_by_value or {}
@@ -709,7 +737,7 @@ def _menu_candidates(
     for candidate in candidates:
         if not candidate:
             continue
-        candidate = _strip_base_menu_choice_marker(candidate)
+        candidate = candidate.strip() if keep_custom_prefix else _strip_base_menu_choice_marker(candidate)
         if not candidate:
             continue
         canonical = _format_route_for_log(candidate) if aliases is ROA_ALIASES else None
@@ -767,6 +795,7 @@ def _menu_for_value(
     aliases: dict[str, list[str]] | None = None,
     labels_by_value: dict[str, str] | None = None,
     allow_back: bool = False,
+    keep_custom_prefix: bool = False,
 ) -> str | None:
     if not shutil.which(executable):
         raise typer.BadParameter(f"{executable} was not found in PATH")
@@ -774,7 +803,7 @@ def _menu_for_value(
     menu_candidates = candidates or ([current] if current else [])
     if allow_back:
         menu_candidates = [*menu_candidates, BACK_CHOICE]
-    labels, label_values = _menu_candidates(menu_candidates, aliases, labels_by_value)
+    labels, label_values = _menu_candidates(menu_candidates, aliases, labels_by_value, keep_custom_prefix)
     menu_input = "\n".join(labels)
     if menu_input:
         menu_input += "\n"
@@ -816,7 +845,7 @@ def _menu_for_value(
         raise BackRequested
     if value:
         selected = label_values.get(value)
-        if selected is None and value.startswith(MENU_CUSTOM_PREFIX):
+        if selected is None and not keep_custom_prefix and value.startswith(MENU_CUSTOM_PREFIX):
             selected = value.removeprefix(MENU_CUSTOM_PREFIX).strip()
         return selected or _resolve_alias(value, aliases or {})
     if optional:
@@ -919,7 +948,7 @@ def _format_solution_volume(volume: str | None) -> str | None:
     if not volume:
         return None
     volume = volume.strip()
-    if not volume or _alias_key(volume) == _alias_key(UNKNOWN_VOLUME_CHOICE):
+    if not volume or _is_skip_choice(volume):
         return None
     match = VOLUME_RE.match(volume)
     if not match:
@@ -1022,7 +1051,7 @@ def _format_needle_gauge(gauge: str | None) -> str | None:
     if not gauge:
         return None
     gauge = gauge.strip()
-    if not gauge or _alias_key(gauge) == _alias_key(UNKNOWN_GAUGE_CHOICE):
+    if not gauge or _is_skip_choice(gauge):
         return None
     match = GAUGE_RE.match(gauge)
     if not match:
@@ -1049,7 +1078,7 @@ def _format_needle_length(length: str | None) -> str | None:
     if not length:
         return None
     length = length.strip()
-    if not length or _alias_key(length) == _alias_key(UNKNOWN_LENGTH_CHOICE):
+    if not length or _is_skip_choice(length):
         return None
     match = LENGTH_RE.match(length)
     if not match:
@@ -1463,11 +1492,11 @@ def _select_reused_supply_entry(mode: InputMode, label: str, kind: str) -> dict[
     return _parse_reused_supply_entry(kind, description)
 
 
-def _prompt_for_supply_entry(label: str, kind: str) -> dict[str, object]:
+def _prompt_for_supply_entry(label: str, kind: str) -> dict[str, object] | None:
     entries = _available_supply_entries(kind)
     reuse_action = _supply_reuse_action(label)
     con.print(f"{label}s:")
-    labels = [*[_supply_entry_label(entry) for entry in entries], reuse_action]
+    labels = [SUPPLY_ACTION_SKIP, *[_supply_entry_label(entry) for entry in entries], reuse_action]
     for index, choice_label in enumerate(labels, 1):
         con.print(f"{index}. {choice_label}")
     selected = _prompt_for_value(label, "1", optional=False)
@@ -1477,19 +1506,24 @@ def _prompt_for_supply_entry(label: str, kind: str) -> dict[str, object]:
         selected_action = _resolve_alias(selected, SUPPLY_ACTION_ALIASES) or selected
         if selected_action == reuse_action:
             return _select_reused_supply_entry(InputMode.prompt, label, kind)
+        if selected_action == SUPPLY_ACTION_SKIP:
+            return None
         raise typer.BadParameter(f"{label} selection must be a number") from exc
     if selected_index < 1 or selected_index > len(labels):
         raise typer.BadParameter(f"{label} selection out of range")
-    if selected_index == len(labels):
+    if labels[selected_index - 1] == SUPPLY_ACTION_SKIP:
+        return None
+    if labels[selected_index - 1] == reuse_action:
         return _select_reused_supply_entry(InputMode.prompt, label, kind)
-    return entries[selected_index - 1]
+    # Index 1 is the pinned Skip choice, so stack entries start at 2.
+    return entries[selected_index - 2]
 
 
-def _menu_for_supply_entry(executable: str, label: str, kind: str, allow_back: bool = False) -> dict[str, object]:
+def _menu_for_supply_entry(executable: str, label: str, kind: str, allow_back: bool = False) -> dict[str, object] | None:
     entries = _available_supply_entries(kind)
     reuse_action = _supply_reuse_action(label)
     labels = [_supply_entry_label(entry) for entry in entries]
-    choices = [*labels, reuse_action]
+    choices = [SUPPLY_ACTION_SKIP, *labels, reuse_action]
     selected_label = _menu_for_value(
         executable,
         label,
@@ -1499,6 +1533,8 @@ def _menu_for_supply_entry(executable: str, label: str, kind: str, allow_back: b
         allow_back=allow_back,
     )
     selected_action = _resolve_alias(selected_label or "", SUPPLY_ACTION_ALIASES) or selected_label
+    if selected_action == SUPPLY_ACTION_SKIP:
+        return None
     if selected_action == reuse_action:
         return _select_reused_supply_entry(InputMode(executable), label, kind)
     for entry_label, entry in zip(labels, entries):
@@ -1988,7 +2024,7 @@ def _select_prompt_action(mode: InputMode) -> str:
         mode,
         "Action",
         ACTION_LOG_INGESTION,
-        [ACTION_LOG_INGESTION, ACTION_EDIT_SUPPLY_STACK, ACTION_EDIT_STASH, ACTION_STATISTICS, ACTION_SETTINGS],
+        [ACTION_LOG_INGESTION, ACTION_EDIT_SUPPLY_STACK, ACTION_EDIT_STASH, ACTION_HISTORY, ACTION_STATISTICS, ACTION_SETTINGS],
         ACTION_ALIASES,
     )
 
@@ -2034,12 +2070,12 @@ def _select_stack_item(mode: InputMode) -> tuple[str, dict[str, object]] | None:
         _supply_stack_item_id(kind, entry): (kind, entry)
         for kind, entry in entries
     }
-    choices = [SUPPLY_ACTION_ADD_NEW, *item_by_id, SUPPLY_ACTION_DONE]
+    choices = [SUPPLY_ACTION_ADD_NEW, *item_by_id, SUPPLY_ACTION_BACK]
     labels_by_value = {
         _supply_stack_item_id(kind, entry): _supply_stack_item_label(kind, entry)
         for kind, entry in entries
     }
-    labels_by_value.update({SUPPLY_ACTION_ADD_NEW: SUPPLY_ACTION_ADD_NEW, SUPPLY_ACTION_DONE: SUPPLY_ACTION_DONE})
+    labels_by_value.update({SUPPLY_ACTION_ADD_NEW: SUPPLY_ACTION_ADD_NEW, SUPPLY_ACTION_BACK: SUPPLY_ACTION_BACK})
     if mode == InputMode.prompt:
         labels = [labels_by_value.get(choice, choice) for choice in choices]
         _print_prompt_choices("Stack", labels)
@@ -2048,13 +2084,13 @@ def _select_stack_item(mode: InputMode) -> tuple[str, dict[str, object]] | None:
             selected_index = int(value)
         except (TypeError, ValueError):
             selected = _resolve_alias(value, SUPPLY_ACTION_ALIASES) or value
-            for choice, label in zip(choices, labels):
-                if selected == choice or selected == label:
-                    return item_by_id.get(choice)
             if selected == SUPPLY_ACTION_ADD_NEW:
                 return None
-            if selected == SUPPLY_ACTION_DONE:
+            if selected == SUPPLY_ACTION_BACK:
                 raise StopIteration
+            for choice, label in zip(choices, labels):
+                if choice in item_by_id and (selected == choice or selected == label):
+                    return item_by_id[choice]
             raise typer.BadParameter(f"Unknown stack item: {value}")
         if selected_index < 1 or selected_index > len(choices):
             raise typer.BadParameter("Stack selection out of range")
@@ -2068,7 +2104,7 @@ def _select_stack_item(mode: InputMode) -> tuple[str, dict[str, object]] | None:
             labels_by_value=labels_by_value,
             aliases=SUPPLY_ACTION_ALIASES,
         )
-    if choice == SUPPLY_ACTION_DONE:
+    if choice == SUPPLY_ACTION_BACK:
         raise StopIteration
     if choice == SUPPLY_ACTION_ADD_NEW:
         return None
@@ -2198,10 +2234,10 @@ def _add_new_supply_stack_entry(mode: InputMode) -> None:
         mode,
         SUPPLY_ACTION_ADD_NEW,
         SUPPLY_ACTION_ADD_SYRINGE,
-        [SUPPLY_ACTION_ADD_SYRINGE, SUPPLY_ACTION_ADD_NEEDLE, SUPPLY_ACTION_DONE],
+        [SUPPLY_ACTION_ADD_SYRINGE, SUPPLY_ACTION_ADD_NEEDLE, SUPPLY_ACTION_BACK],
         SUPPLY_ACTION_ALIASES,
     )
-    if action == SUPPLY_ACTION_DONE:
+    if action == SUPPLY_ACTION_BACK:
         return
     if action == SUPPLY_ACTION_ADD_SYRINGE:
         description = _select_supply_type(mode, "syringes")
@@ -2230,10 +2266,10 @@ def _edit_supply_stack(mode: InputMode) -> None:
             mode,
             _supply_stack_item_label(kind, entry),
             SUPPLY_ACTION_ADD,
-            [SUPPLY_ACTION_ADD, SUPPLY_ACTION_REMOVE, SUPPLY_ACTION_DONE],
+            [SUPPLY_ACTION_ADD, SUPPLY_ACTION_REMOVE, SUPPLY_ACTION_BACK],
             SUPPLY_ACTION_ALIASES,
         )
-        if action == SUPPLY_ACTION_DONE:
+        if action == SUPPLY_ACTION_BACK:
             continue
         if action == SUPPLY_ACTION_ADD:
             amount = _interactive_quantity(mode, "Add", [1, 5, 10, 50, 100])
@@ -2267,12 +2303,12 @@ def _select_stash_item(mode: InputMode) -> dict[str, object] | None:
         _stash_item_id(entry): entry
         for entry in entries
     }
-    choices = [SUPPLY_ACTION_ADD_NEW, *item_by_id, SUPPLY_ACTION_DONE]
+    choices = [SUPPLY_ACTION_ADD_NEW, *item_by_id, SUPPLY_ACTION_BACK]
     labels_by_value = {
         _stash_item_id(entry): _stash_item_label(entry)
         for entry in entries
     }
-    labels_by_value.update({SUPPLY_ACTION_ADD_NEW: SUPPLY_ACTION_ADD_NEW, SUPPLY_ACTION_DONE: SUPPLY_ACTION_DONE})
+    labels_by_value.update({SUPPLY_ACTION_ADD_NEW: SUPPLY_ACTION_ADD_NEW, SUPPLY_ACTION_BACK: SUPPLY_ACTION_BACK})
     if mode == InputMode.prompt:
         labels = [labels_by_value.get(choice, choice) for choice in choices]
         _print_prompt_choices("Stash", labels)
@@ -2281,13 +2317,13 @@ def _select_stash_item(mode: InputMode) -> dict[str, object] | None:
             selected_index = int(value)
         except (TypeError, ValueError):
             selected = _resolve_alias(value, SUPPLY_ACTION_ALIASES) or value
-            for choice, label in zip(choices, labels):
-                if selected == choice or selected == label:
-                    return item_by_id.get(choice)
             if selected == SUPPLY_ACTION_ADD_NEW:
                 return None
-            if selected == SUPPLY_ACTION_DONE:
+            if selected == SUPPLY_ACTION_BACK:
                 raise StopIteration
+            for choice, label in zip(choices, labels):
+                if choice in item_by_id and (selected == choice or selected == label):
+                    return item_by_id[choice]
             raise typer.BadParameter(f"Unknown stash item: {value}")
         if selected_index < 1 or selected_index > len(choices):
             raise typer.BadParameter("Stash selection out of range")
@@ -2301,7 +2337,7 @@ def _select_stash_item(mode: InputMode) -> dict[str, object] | None:
             labels_by_value=labels_by_value,
             aliases=SUPPLY_ACTION_ALIASES,
         )
-    if choice == SUPPLY_ACTION_DONE:
+    if choice == SUPPLY_ACTION_BACK:
         raise StopIteration
     if choice == SUPPLY_ACTION_ADD_NEW:
         return None
@@ -2347,10 +2383,10 @@ def _edit_stash(mode: InputMode) -> None:
             mode,
             _stash_item_label(selected),
             SUPPLY_ACTION_ADD,
-            [SUPPLY_ACTION_ADD, SUPPLY_ACTION_REMOVE, SUPPLY_ACTION_DONE],
+            [SUPPLY_ACTION_ADD, SUPPLY_ACTION_REMOVE, SUPPLY_ACTION_BACK],
             SUPPLY_ACTION_ALIASES,
         )
-        if action == SUPPLY_ACTION_DONE:
+        if action == SUPPLY_ACTION_BACK:
             continue
         if action == SUPPLY_ACTION_ADD:
             amount = _interactive_stash_amount(mode, "Add")
@@ -2425,11 +2461,41 @@ def _eval_decimal_math_expression(value: str) -> Decimal:
     return eval_node(parsed)
 
 
-def _format_dosage_amount(amount: str) -> str:
+DOSAGE_RANGE_AMOUNT_RE = re.compile(
+    r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)\s*-\s*[+-]?(?:\d+(?:\.\d*)?|\.\d+)$"
+)
+
+
+def _is_dosage_math_expression(amount: str) -> bool:
     amount = amount.strip()
     if not re.search(r"[+\-*/()]", amount):
-        return amount
-    return _format_decimal(_eval_decimal_math_expression(amount))
+        return False
+    return not DOSAGE_RANGE_AMOUNT_RE.match(amount)
+
+
+def _format_dosage_amount(amount: str) -> str:
+    is_approximate, amount = _split_dosage_guess_marker(amount)
+    amount = (amount or "").strip()
+    if _is_dosage_math_expression(amount):
+        amount = _format_decimal(_eval_decimal_math_expression(amount))
+    return _mark_guess_dosage(amount) if is_approximate else amount
+
+
+def _format_dosage_expression(dosage: str) -> str:
+    """Evaluate a math expression in a complete dosage such as '~25*2mg@1ml' to '~50mg@1ml'."""
+    dosage = dosage.strip()
+    if "@" in dosage:
+        before, after = [part.strip() for part in dosage.split("@", 1)]
+        if before.endswith("ml") and after:
+            return f"{before}@{_format_dosage_expression(after)}"
+        return f"{_format_dosage_expression(before)}@{after}"
+    is_approximate, stripped = _split_dosage_guess_marker(dosage)
+    stripped = (stripped or "").strip()
+    amount, unit = _split_dosage_unit(stripped)
+    if not amount or _is_custom_dosage(amount) or not _is_dosage_math_expression(amount):
+        return dosage
+    formatted = f"{_format_dosage_amount(amount)}{unit or ''}"
+    return _mark_guess_dosage(formatted) if is_approximate else formatted
 
 
 def _format_dosage(amount: str, unit: str | None) -> str:
@@ -2476,21 +2542,25 @@ def _menu_for_dosage(
         dosage_candidates.append(current)
     dosage_candidates.extend(candidates or [])
     while True:
-        amount = _menu_for_value(
+        raw_amount = _menu_for_value(
             executable,
             label,
             current_amount,
             candidates=dosage_candidates,
             optional=optional,
             allow_back=allow_back,
+            keep_custom_prefix=True,
         )
-        if amount is None:
+        if raw_amount is None:
             return ""
+        is_approximate, amount = _split_dosage_guess_marker(raw_amount)
+        amount = amount or ""
         selected_amount, selected_unit = _split_dosage_unit(amount)
         if selected_unit:
-            return _format_dosage(selected_amount or amount, selected_unit)
+            dosage = _format_dosage(selected_amount or amount, selected_unit)
+            return _mark_guess_dosage(dosage) if is_approximate else dosage
         if _is_custom_dosage(amount):
-            return amount.strip()
+            return _mark_guess_dosage(amount.strip()) if is_approximate else amount.strip()
         unit_candidates = [current_unit] if current_unit else []
         unit_candidates.extend(UNIT_CHOICES)
         try:
@@ -2503,7 +2573,8 @@ def _menu_for_dosage(
             )
         except BackRequested:
             continue
-        return _format_dosage(amount, unit)
+        dosage = _format_dosage(amount, unit)
+        return _mark_guess_dosage(dosage) if is_approximate else dosage
 
 
 def _prompt_for_extra_info(
@@ -2557,17 +2628,17 @@ def _menu_for_extra_info(
         add_extra_info = _menu_for_value(
             executable,
             EXTRA_INFO_PROMPT,
-            "No",
-            candidates=["No", "Yes"],
-            aliases=EXTRA_INFO_ALIASES,
+            EXTRA_INFO_SKIP_CHOICE,
+            candidates=[EXTRA_INFO_SKIP_CHOICE, EXTRA_INFO_SHOW_CHOICE],
+            aliases=EXTRA_INFO_CHOICE_ALIASES,
             optional=True,
             allow_back=allow_back,
         )
         if add_extra_info is None:
             return note, time, False
-        if add_extra_info == "No":
+        if add_extra_info == EXTRA_INFO_SKIP_CHOICE:
             return note, time, False
-        if add_extra_info == "Yes":
+        if add_extra_info == EXTRA_INFO_SHOW_CHOICE:
             while True:
                 try:
                     selected_note = _menu_for_value(
@@ -3075,6 +3146,349 @@ def _show_statistics(mode: InputMode, logfile: Path) -> None:
             _show_statistics_lines(mode, section, _statistics_route_lines(period))
 
 
+def _load_webhook_message_cache() -> dict[str, dict[str, dict[str, object]]]:
+    if not WEBHOOK_MESSAGE_CACHE_FILE.exists():
+        return {}
+    try:
+        with open(WEBHOOK_MESSAGE_CACHE_FILE) as infile:
+            raw = json.load(infile)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    logs = raw.get("logs") if isinstance(raw, dict) else None
+    if not isinstance(logs, dict):
+        return {}
+    return {
+        log_key: {ts: record for ts, record in entries.items() if isinstance(record, dict) and record.get("id")}
+        for log_key, entries in logs.items()
+        if isinstance(entries, dict)
+    }
+
+
+def _write_webhook_message_cache(cache: dict[str, dict[str, dict[str, object]]]) -> None:
+    WEBHOOK_MESSAGE_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"version": WEBHOOK_MESSAGE_CACHE_VERSION, "logs": {key: value for key, value in cache.items() if value}}
+    tmpfile = WEBHOOK_MESSAGE_CACHE_FILE.with_suffix(f"{WEBHOOK_MESSAGE_CACHE_FILE.suffix}.tmp")
+    with open(tmpfile, "w") as outfile:
+        json.dump(payload, outfile, indent=2, sort_keys=True)
+        outfile.write("\n")
+    tmpfile.replace(WEBHOOK_MESSAGE_CACHE_FILE)
+
+
+def _webhook_id(webhook_url: str) -> str | None:
+    match = re.search(r"/webhooks/(?P<id>\d+)/", webhook_url)
+    return match.group("id") if match else None
+
+
+def _store_webhook_message(logfile: Path, timestamp: str, message_id: str, webhook_url: str, backdated: bool) -> None:
+    cache = _load_webhook_message_cache()
+    cache.setdefault(_logfile_cache_key(logfile), {})[timestamp] = {
+        "id": message_id,
+        "webhook_id": _webhook_id(webhook_url),
+        "backdated": backdated,
+    }
+    _write_webhook_message_cache(cache)
+
+
+def _get_webhook_message(logfile: Path, timestamp: str) -> dict[str, object] | None:
+    return _load_webhook_message_cache().get(_logfile_cache_key(logfile), {}).get(timestamp)
+
+
+def _pop_webhook_message(logfile: Path, timestamp: str) -> dict[str, object] | None:
+    cache = _load_webhook_message_cache()
+    record = cache.get(_logfile_cache_key(logfile), {}).pop(timestamp, None)
+    if record is not None:
+        _write_webhook_message_cache(cache)
+    return record
+
+
+def _move_webhook_message(logfile: Path, old_timestamp: str, new_timestamp: str) -> None:
+    if old_timestamp == new_timestamp:
+        return
+    cache = _load_webhook_message_cache()
+    entries = cache.get(_logfile_cache_key(logfile), {})
+    record = entries.pop(old_timestamp, None)
+    if record is None:
+        return
+    entries[new_timestamp] = record
+    _write_webhook_message_cache(cache)
+
+
+def _webhook_message_url(webhook_url: str, message_id: str) -> str:
+    return f"{webhook_url.rstrip('/')}/messages/{message_id}"
+
+
+def _post_webhook_message(webhook_url: str, logline: str) -> str | None:
+    response = requests.post(webhook_url, params={"wait": "true"}, json={"content": logline, "flags": 4})
+    response.raise_for_status()
+    con.print(f"Status: {response.status_code}")
+    try:
+        message_id = response.json().get("id")
+    except ValueError:
+        return None
+    return str(message_id) if message_id else None
+
+
+def _edit_webhook_message(webhook_url: str, message_id: str, logline: str) -> None:
+    response = requests.patch(_webhook_message_url(webhook_url, message_id), json={"content": logline, "flags": 4})
+    response.raise_for_status()
+
+
+def _delete_webhook_message(webhook_url: str, message_id: str) -> None:
+    response = requests.delete(_webhook_message_url(webhook_url, message_id))
+    response.raise_for_status()
+
+
+def _format_logline(
+    user: str,
+    userpage: str | None,
+    kind: LogKind,
+    dosage: str,
+    substance_md: str,
+    salt: str | None,
+    roa: str,
+    logged_site: str | None,
+    note: str | None,
+    time_now: str,
+    is_backdated: bool,
+) -> str:
+    user_md = f"[{user}]({userpage})" if userpage else user
+    if kind == LogKind.mixture:
+        logline = f"{user_md}: {dosage} {substance_md}" + (
+            f" {salt.replace('<','[').replace('>',']')}" if salt else ""
+        )
+    else:
+        logline = f"{user_md}: {dosage} {substance_md}" + (
+            f" [{salt}]" if salt else ""
+        )
+    webhook_site = _format_webhook_site(roa, logged_site)
+    return logline + f" via {roa}" + (
+        f" at {webhook_site} site" if webhook_site else ""
+    ) + (
+        f"\n> {note}" if note else ""
+    ) + (
+        f"\n> {time_now}" if is_backdated else ""
+    )
+
+
+def _cached_substance_md(title: str) -> str:
+    """Link substances from the local substance cache only (no lookups)."""
+    components = _split_mixture_values(title) or [title]
+    titles = []
+    linked = []
+    for component in components:
+        cached = _resolve_cached_substance_title(component)
+        titles.append(cached or component)
+        linked.append(_format_substance_link(cached) if cached else component)
+    if len(components) <= 1:
+        return linked[0]
+    return _format_linked_substance_mixture(titles, linked)
+
+
+def _logline_from_row(row: list[str], userpage: str | None, backdated: bool) -> str:
+    timestamp, user, title, dosage, roa, site, salt, note = _padded_log_row(row)[:len(LOG_COLUMNS)]
+    if _is_mixture_value(title):
+        kind = LogKind.mixture
+    elif "@" in dosage:
+        kind = LogKind.solution
+    else:
+        kind = LogKind.single
+    return _format_logline(user, userpage, kind, dosage, _cached_substance_md(title), salt or None, roa, site or None, note or None, timestamp, backdated)
+
+
+def _webhook_record_usable(record: dict[str, object] | None, webhook: HttpUrl | None) -> str | None:
+    """Return the webhook URL to use for a stored message, or None with a reason printed."""
+    if not record:
+        return None
+    if not webhook:
+        err_con.print("Webhook message not updated: no webhook configured", style="bold yellow")
+        return None
+    webhook_url = webhook.encoded_string()
+    stored_id = record.get("webhook_id")
+    if stored_id and stored_id != _webhook_id(webhook_url):
+        err_con.print("Webhook message not updated: it was posted through a different webhook", style="bold yellow")
+        return None
+    return webhook_url
+
+
+def _delete_history_webhook_message(logfile: Path, timestamp: str, webhook: HttpUrl | None) -> None:
+    record = _pop_webhook_message(logfile, timestamp)
+    webhook_url = _webhook_record_usable(record, webhook)
+    if not webhook_url:
+        return
+    try:
+        _delete_webhook_message(webhook_url, str(record["id"]))
+        con.print("Deleted webhook message.")
+    except Exception as exc:
+        err_con.print(f"Webhook delete failed: '{exc}'", style="bold yellow")
+
+
+def _update_history_webhook_message(logfile: Path, row: list[str], webhook: HttpUrl | None, userpage: str | None) -> None:
+    timestamp = _padded_log_row(row)[0]
+    record = _get_webhook_message(logfile, timestamp)
+    webhook_url = _webhook_record_usable(record, webhook)
+    if not webhook_url:
+        return
+    try:
+        _edit_webhook_message(webhook_url, str(record["id"]), _logline_from_row(row, userpage, bool(record.get("backdated"))))
+        con.print("Updated webhook message.")
+    except Exception as exc:
+        err_con.print(f"Webhook edit failed: '{exc}'", style="bold yellow")
+
+
+def _read_log_rows(logfile: Path) -> list[list[str]]:
+    if not logfile.exists():
+        return []
+    with open(logfile, newline="") as infile:
+        return list(csv.reader(infile))
+
+
+def _is_log_header_row(row: list[str]) -> bool:
+    return bool(row) and row[0].strip().lower() == "timestamp"
+
+
+def _write_log_rows(logfile: Path, rows: list[list[str]]) -> None:
+    tmpfile = logfile.with_suffix(f"{logfile.suffix}.tmp")
+    with open(tmpfile, "w", newline="") as outfile:
+        csv.writer(outfile).writerows(rows)
+    tmpfile.replace(logfile)
+    # Rebuild the cached menu choices from the remaining rows (a local read of
+    # the CSV, no substance lookups), so choices that no longer appear in any
+    # row are dropped right away.
+    _sync_choice_cache_from_history(logfile)
+
+
+def _padded_log_row(row: list[str]) -> list[str]:
+    return [*row, *([""] * (len(LOG_COLUMNS) - len(row)))]
+
+
+def _history_entry_label(row: list[str]) -> str:
+    padded = _padded_log_row(row)
+    timestamp = _parse_log_timestamp(padded[0])
+    when = timestamp.strftime("%Y-%m-%d %H:%M:%S") if timestamp else padded[0]
+    parts = [when, padded[3], padded[2]]
+    if padded[4]:
+        parts.append(f"via {padded[4]}")
+    if padded[5]:
+        parts.append(f"at {padded[5]}")
+    if padded[6]:
+        parts.append(f"[{padded[6]}]")
+    return " ".join(part for part in parts if part)
+
+
+def _normalize_history_value(column: str, value: str) -> str:
+    value = value.strip()
+    if not value:
+        return ""
+    if column == "timestamp":
+        parsed = _parse_log_timestamp(value)
+        if parsed is None:
+            raise typer.BadParameter(f"Could not parse '{value}' as a timestamp")
+        return parsed.isoformat(timespec="milliseconds")
+    if column == "substance":
+        return _resolve_alias(value, SUBSTANCE_ALIASES) or value
+    if column == "dosage":
+        return _format_dosage_expression(value)
+    if column == "roa":
+        return _format_route_for_log(value) or value
+    if column == "site":
+        return _logged_site(value) or ""
+    if column == "salt":
+        return _format_salt_for_log(_resolve_alias(value, SALT_ALIASES)) or ""
+    return value
+
+
+def _edit_history_fields(mode: InputMode, logfile: Path, row_index: int, webhook: HttpUrl | None, userpage: str | None) -> None:
+    while True:
+        rows = _read_log_rows(logfile)
+        if row_index >= len(rows):
+            return
+        row = _padded_log_row(rows[row_index])
+        labels_by_value = {
+            column: f"{column}: {value}" if value else column
+            for column, value in zip(LOG_COLUMNS, row)
+        }
+        selected = _select_statistics_choice(mode, "Edit log", LOG_COLUMNS, labels_by_value)
+        if selected == BACK_CHOICE:
+            return
+        if selected not in LOG_COLUMNS:
+            raise typer.BadParameter(f"Unknown log field: {selected}")
+        column_index = LOG_COLUMNS.index(selected)
+        current = row[column_index]
+        if mode == InputMode.prompt:
+            new_value = _prompt_for_value(selected, current, optional=True)
+        else:
+            new_value = _menu_for_value(
+                mode.value,
+                selected,
+                current,
+                candidates=[current] if current else [],
+                optional=True,
+                keep_custom_prefix=selected == "dosage",
+            )
+        row[column_index] = _normalize_history_value(selected, new_value or "")
+        rows[row_index] = row
+        _write_log_rows(logfile, rows)
+        con.print(f"Updated {selected}.")
+        if selected == "timestamp":
+            _move_webhook_message(logfile, current, row[column_index])
+        _update_history_webhook_message(logfile, row, webhook, userpage)
+
+
+def _edit_history_entry(mode: InputMode, logfile: Path, row_index: int, webhook: HttpUrl | None, userpage: str | None) -> None:
+    while True:
+        rows = _read_log_rows(logfile)
+        if row_index >= len(rows) or _is_log_header_row(rows[row_index]):
+            return
+        action = _select_statistics_choice(
+            mode,
+            _history_entry_label(rows[row_index]),
+            [HISTORY_EDIT_CHOICE, HISTORY_REMOVE_CHOICE],
+        )
+        if action == BACK_CHOICE:
+            return
+        if action == HISTORY_REMOVE_CHOICE:
+            removed = rows.pop(row_index)
+            _write_log_rows(logfile, rows)
+            con.print("Removed log entry.")
+            _delete_history_webhook_message(logfile, _padded_log_row(removed)[0], webhook)
+            return
+        if action == HISTORY_EDIT_CHOICE:
+            _edit_history_fields(mode, logfile, row_index, webhook, userpage)
+            continue
+        raise typer.BadParameter(f"Unknown history action: {action}")
+
+
+def _show_history(mode: InputMode, logfile: Path, webhook: HttpUrl | None, userpage: str | None) -> None:
+    offset = 0
+    while True:
+        rows = _read_log_rows(logfile)
+        entries = [(index, row) for index, row in enumerate(rows) if row and not _is_log_header_row(row)]
+        entries.reverse()
+        page = entries[offset:offset + HISTORY_PAGE_SIZE]
+        if not page and offset:
+            offset = max(0, offset - HISTORY_PAGE_SIZE)
+            continue
+        if not page:
+            con.print("No logs found.")
+            return
+        choices = [str(index) for index, _ in page]
+        labels_by_value = {str(index): _history_entry_label(row) for index, row in page}
+        if offset + HISTORY_PAGE_SIZE < len(entries):
+            choices.append(HISTORY_NEXT_CHOICE)
+            labels_by_value[HISTORY_NEXT_CHOICE] = HISTORY_NEXT_CHOICE
+        page_number = offset // HISTORY_PAGE_SIZE + 1
+        page_count = (len(entries) + HISTORY_PAGE_SIZE - 1) // HISTORY_PAGE_SIZE
+        selected = _select_statistics_choice(mode, f"History ({page_number} of {page_count})", choices, labels_by_value)
+        if selected == BACK_CHOICE:
+            return
+        if selected == HISTORY_NEXT_CHOICE:
+            offset += HISTORY_PAGE_SIZE
+            continue
+        if selected not in labels_by_value:
+            raise typer.BadParameter(f"Unknown log entry: {selected}")
+        _edit_history_entry(mode, logfile, int(selected), webhook, userpage)
+
+
 def _format_list_value(values: list[str | None]) -> str | None:
     present = [value for value in values if value]
     if not present:
@@ -3159,7 +3573,7 @@ def _format_mixture(
         _format_salt_for_log(_resolve_alias(salt, SALT_ALIASES)) if salt else None
         for salt in salts
     ]
-    resolved_dosages = [dosage.strip() for dosage in dosages]
+    resolved_dosages = [_format_dosage_expression(dosage) for dosage in dosages]
     dosage_value = _format_wrapped_list_value(resolved_dosages)
     volume_ml = _format_solution_volume(volume_ml)
     if volume_ml:
@@ -3190,7 +3604,7 @@ def _format_iv_site(vein: str | None, side: str | None) -> str | None:
 
 
 def _is_unknown_site(site: str | None) -> bool:
-    return bool(site and _alias_key(site) == _alias_key(UNKNOWN_SITE_CHOICE))
+    return _is_skip_choice(site)
 
 
 def _logged_site(site: str | None) -> str | None:
@@ -3225,7 +3639,20 @@ def _format_webhook_site(roa: str, site: str | None) -> str | None:
     return f"{side}-{linked_vein}" if side else linked_vein
 
 
+MARKDOWN_LINK_RE = re.compile(
+    r"\[(?P<label>(?:\\.|[^\[\]\\])*)\]\((?:[^()\s]|\([^()]*\))*\)"
+)
+
+
+def _strip_markdown_links(text: str) -> str:
+    def plain_label(match: re.Match) -> str:
+        return re.sub(r"\\(.)", r"\1", match.group("label"))
+
+    return MARKDOWN_LINK_RE.sub(plain_label, text)
+
+
 def _send_notification(description: str) -> None:
+    description = _strip_markdown_links(description)
     if not shutil.which("notify-send"):
         err_con.print("Notification failed: 'notify-send was not found in PATH'", style="bold yellow")
         return
@@ -3299,14 +3726,6 @@ def _format_site_usage_label(usage: tuple[int, int, int, int]) -> str:
     return f"{{d:{usage[0]} w:{usage[1]} m:{usage[2]} t:{usage[3]}}}"
 
 
-def _site_choice_labels(values: list[str], counts: dict[str, tuple[int, int, int, int]]) -> dict[str, str]:
-    labels = {}
-    for value in values:
-        usage = counts.get(_iv_site_key(value), (0, 0, 0, 0))
-        labels[value] = f"{value} {_format_site_usage_label(usage)}"
-    return labels
-
-
 def _site_choice_label(value: str, count_key: str, counts: dict[str, tuple[int, int, int, int]]) -> str:
     usage = counts.get(count_key, (0, 0, 0, 0))
     return f"{value} {_format_site_usage_label(usage)}"
@@ -3345,7 +3764,6 @@ def _menu_for_site(
             "Vein",
             current_vein,
             candidates=vein_candidates,
-            labels_by_value=_site_choice_labels(vein_candidates, site_counts),
             optional=True,
             allow_back=allow_back,
         )
@@ -3781,7 +4199,7 @@ def _format_single_solution_component(
 ) -> tuple[str, str, str | None]:
     return (
         _resolve_alias(substance, SUBSTANCE_ALIASES) or substance,
-        _append_solution_volume(dosage.strip(), volume),
+        _append_solution_volume(_format_dosage_expression(dosage), volume),
         _format_salt_for_log(_resolve_alias(salt, SALT_ALIASES)) if salt else None,
     )
 
@@ -3853,7 +4271,7 @@ def _collect_input(
 
         substance = _resolve_alias(substance, SUBSTANCE_ALIASES) or substance
         salt = _format_salt_for_log(_resolve_alias(salt, SALT_ALIASES))
-        dosage = dosage.strip()
+        dosage = _format_dosage_expression(dosage)
         if _route_supports_solution_volume(roa):
             dosage = _append_solution_volume(dosage, volume)
         if _route_uses_needle(roa):
@@ -3920,9 +4338,9 @@ def _collect_input(
                     "Volume",
                     volume,
                     candidates=[
+                        UNKNOWN_VOLUME_CHOICE,
                         *([volume] if volume else []),
                         *_read_logged_volumes(logfile),
-                        UNKNOWN_VOLUME_CHOICE,
                     ],
                     allow_back=True,
                 )
@@ -4017,8 +4435,8 @@ def _resolve_cached_substance_title(substance: str) -> str | None:
 
 
 def _lookup_single_substance_title(substance: str, accept = None) -> tuple[str, str]:
-    if _alias_key(substance) == _alias_key(UNKNOWN_SUBSTANCE_CHOICE) and accept != "strict":
-        return UNKNOWN_SUBSTANCE_CHOICE, UNKNOWN_SUBSTANCE_CHOICE
+    if _is_skip_choice(substance) and accept != "strict":
+        return UNKNOWN_SUBSTANCE_TITLE, UNKNOWN_SUBSTANCE_TITLE
 
     entry, not_found = _fetch_substance_entry_result(substance)
     if entry:
@@ -4363,14 +4781,17 @@ def log_ingestion(
     base_prompt_action = _resolve_base_prompt_action(log_ingestion_action, stack_menu_action, stash_menu_action)
     if base_prompt_action and mode == InputMode.flags:
         raise typer.BadParameter("--log-ingestion, --stack-menu, and --stash-menu require a prompt/menu mode")
-    if mode != InputMode.flags and not has_supply_operation and not has_stash_operation and not sync_choices and not daily_usage:
-        action = base_prompt_action or _select_prompt_action(mode)
+    def handle_menu_action(action: str) -> bool:
+        """Run a non-ingestion action. Returns True when an ingestion should be logged."""
         if action == ACTION_EDIT_SUPPLY_STACK:
             _edit_supply_stack(mode)
-            return
+            return False
         if action == ACTION_EDIT_STASH:
             _edit_stash(mode)
-            return
+            return False
+        if action == ACTION_STATISTICS:
+            _show_statistics(mode, _require_option("--csv", logfile))
+            return False
         if action == ACTION_SETTINGS:
             _edit_settings(
                 mode,
@@ -4384,12 +4805,22 @@ def log_ingestion(
                     "notify": notify,
                 },
             )
-            return
-        if action == ACTION_STATISTICS:
-            _show_statistics(mode, _require_option("--csv", logfile))
-            return
+            return False
+        if action == ACTION_HISTORY:
+            _show_history(mode, _require_option("--csv", logfile), webhook, userpage)
+            return False
         if action != ACTION_LOG_INGESTION:
             raise typer.BadParameter(f"Unknown action: {action}")
+        return True
+
+    return_to_menu = False
+    if mode != InputMode.flags and not has_supply_operation and not has_stash_operation and not sync_choices and not daily_usage:
+        action = base_prompt_action or _select_prompt_action(mode)
+        return_to_menu = base_prompt_action is None
+        while not handle_menu_action(action):
+            action = _select_prompt_action(mode)
+            return_to_menu = True
+            started_at = datetime.now(timezone.utc)
 
     _merge_cached_substance_aliases()
     if sync_choices:
@@ -4406,75 +4837,69 @@ def log_ingestion(
 
     logfile = _require_option("--csv", logfile)
     user = _require_option("--user", user)
-    kind, substance, dosage, roa, site, salt, note, time = _collect_input(
-        mode,
-        logfile,
-        _coalesce(substance_arg, substance_opt),
-        _coalesce(dosage_arg, dosage_opt),
-        _coalesce(roa_arg, roa_opt),
-        site,
-        salt,
-        note,
-        _coalesce(" ".join(time_arg) if time_arg else None, set_time),
-        volume_opt,
-        needle_gauge_opt,
-        needle_length_opt,
-        syringe_size_opt,
-    )
-    ingestion_time = (
-        _menu_default_ingestion_time(mode, time, offset_time, started_at)
-        or _parse_ingestion_time(time, offset_time)
-    )
-    time_now = ingestion_time.isoformat(timespec='milliseconds')
-    is_backdated = datetime.now(timezone.utc) - ingestion_time > timedelta(minutes=10)
-    title = substance_md = substance
-
-    if not logfile.exists():
-        logfile.parent.mkdir(parents=True, exist_ok=True)
-        logfile.touch()
-        con.print(f"File '{logfile}' has been created.")
-
-    if mode == InputMode.prompt:
-        accept_mode = "confirm"
-    elif strict_mode == False:
-        accept_mode = "always"
-    else:
-        accept_mode = "strict"
-    title, substance_md = _lookup_substance_title(kind, substance, accept=accept_mode )
-    logged_site = _logged_site(site)
-
-    with open(logfile, "a", newline="") as of:
-        log = csv.writer(of)
-        log.writerow([time_now, user, title, dosage, roa, logged_site, salt, note])
-    _add_logged_choice_options(logfile, title, dosage, salt)
-    _print_supply_updates("Used supply", _decrement_logged_supplies(note))
-    _print_stash_updates("Used stash", _decrement_logged_stash(title, dosage))
-
-    user_md = f"[{user}]({userpage})" if userpage else user
-    if kind == LogKind.mixture:
-        logline = f"{user_md}: {dosage} {substance_md}" + (
-            f" {salt.replace('<','[').replace('>',']')}" if salt else ""
+    while True:
+        kind, substance, dosage, roa, site, salt, note, time = _collect_input(
+            mode,
+            logfile,
+            _coalesce(substance_arg, substance_opt),
+            _coalesce(dosage_arg, dosage_opt),
+            _coalesce(roa_arg, roa_opt),
+            site,
+            salt,
+            note,
+            _coalesce(" ".join(time_arg) if time_arg else None, set_time),
+            volume_opt,
+            needle_gauge_opt,
+            needle_length_opt,
+            syringe_size_opt,
         )
-    else:
-        logline = f"{user_md}: {dosage} {substance_md}" + (
-            f" [{salt}]" if salt else ""
+        ingestion_time = (
+            _menu_default_ingestion_time(mode, time, offset_time, started_at)
+            or _parse_ingestion_time(time, offset_time)
         )
-    webhook_site = _format_webhook_site(roa, logged_site)
-    logline += f" via {roa}" + (
-        f" at {webhook_site} site" if webhook_site else ""
-    ) + (
-        f"\n> {note}" if note else ""
-    ) + (
-        f"\n> {time_now}" if is_backdated else ""
-    )
+        time_now = ingestion_time.isoformat(timespec='milliseconds')
+        is_backdated = datetime.now(timezone.utc) - ingestion_time > timedelta(minutes=10)
+        title = substance_md = substance
 
-    if notify:
-        _send_notification(logline)
+        if not logfile.exists():
+            logfile.parent.mkdir(parents=True, exist_ok=True)
+            logfile.touch()
+            con.print(f"File '{logfile}' has been created.")
 
-    if webhook:
-        try:
-            p = requests.post(webhook.encoded_string(), json={ "content": logline, "flags": 4})
-            p.raise_for_status()
-            con.print(f"Status: {p.status_code}")
-        except Exception as e:
-            err_con.print(f"Webhook failed: '{e}'", style="bold yellow")
+        if mode == InputMode.prompt:
+            accept_mode = "confirm"
+        elif strict_mode == False:
+            accept_mode = "always"
+        else:
+            accept_mode = "strict"
+        title, substance_md = _lookup_substance_title(kind, substance, accept=accept_mode )
+        logged_site = _logged_site(site)
+
+        with open(logfile, "a", newline="") as of:
+            log = csv.writer(of)
+            log.writerow([time_now, user, title, dosage, roa, logged_site, salt, note])
+        _add_logged_choice_options(logfile, title, dosage, salt)
+        _print_supply_updates("Used supply", _decrement_logged_supplies(note))
+        _print_stash_updates("Used stash", _decrement_logged_stash(title, dosage))
+
+        logline = _format_logline(
+            user, userpage, kind, dosage, substance_md, salt, roa, logged_site, note, time_now, is_backdated
+        )
+
+        if notify:
+            _send_notification(logline)
+
+        if webhook:
+            try:
+                message_id = _post_webhook_message(webhook.encoded_string(), logline)
+                if message_id:
+                    _store_webhook_message(logfile, time_now, message_id, webhook.encoded_string(), is_backdated)
+            except Exception as e:
+                err_con.print(f"Webhook failed: '{e}'", style="bold yellow")
+
+        if not return_to_menu:
+            return
+        action = _select_prompt_action(mode)
+        while not handle_menu_action(action):
+            action = _select_prompt_action(mode)
+        started_at = datetime.now(timezone.utc)

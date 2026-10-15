@@ -54,7 +54,7 @@ logpy --daily-usage --csv log.csv
 logpy --daily-usage=23.9.2026 --csv log.csv
 ```
 
-Dosage prompts accept simple arithmetic expressions for numeric amounts, e.g. entering `90 / 2` and unit `mg` logs `45mg`.
+Dosage prompts accept simple arithmetic expressions for numeric amounts, e.g. entering `90 / 2` and unit `mg` logs `45mg`. Expressions also work in argument mode and may be prefixed with `~` to mark an approximate dosage, e.g. `~25*2mg` logs and posts `~50mg`.
 
 Track virtual syringe and needle supply counts:
 
@@ -66,7 +66,7 @@ logpy --remove-needle "10x 30G 13mm bd microlance yellow"
 logpy --stack
 ```
 
-Supply counts are stored in `~/.config/logpy/supplies.json`. Prompt and menu modes select the syringe and needle from this stack for injection routes, with a reuse option for either item when no new stock should be consumed. Reused items still select or enter a syringe or needle type for the log, but they do not need to exist in the stack and do not decrement stack counts. When an injection is logged with selected stack items or matching `--syringe-size`, `--needle-gauge`, and `--needle-length` values, the matching syringe and needle counters are decremented unless the note includes `reused-syringe` or `reused-needle`.
+Supply counts are stored in `~/.config/logpy/supplies.json`. Prompt and menu modes select the syringe and needle from this stack for injection routes, with a reuse option for either item when no new stock should be consumed. Reused items still select or enter a syringe or needle type for the log, but they do not need to exist in the stack and do not decrement stack counts. A "Skip" option is listed first for each item, which logs the injection without recording that syringe or needle at all and leaves the stack untouched. When an injection is logged with selected stack items or matching `--syringe-size`, `--needle-gauge`, and `--needle-length` values, the matching syringe and needle counters are decremented unless the note includes `reused-syringe` or `reused-needle`.
 
 Syringes with `non-disposable` in their supply description are logged normally but do not decrement after use, e.g. `logpy --add-syringe "1x 1ml non-disposable glass luer-lock"`.
 
@@ -101,6 +101,10 @@ logpy --bemenu
 # "fuzzel" mode disabled for now
 # logpy --fuzzel
 ```
+
+The main action menu also offers a "History" entry. It lists the newest 100 logged ingestions, with a "Next 100" choice at the end for older pages. Selecting an entry offers "Edit", which changes one field of that row at a time, and "Remove", which deletes the row. Both rewrite the CSV in place and rebuild the cached menu choices from the remaining rows, so a substance, dosage, or salt that no longer appears in any row stops being suggested. This is a local read of the CSV; the AnodyneWiki lookups of `--sync-choices` are not repeated.
+
+When a webhook is configured, the id of each Discord message posted for an ingestion is stored in `~/.config/logpy/webhook-messages.json`. Editing a log through History updates that message and removing the log deletes it. Messages posted before this file existed have no stored id and are left untouched.
 
 ## Flags
 

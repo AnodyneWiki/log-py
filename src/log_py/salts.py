@@ -1,5 +1,5 @@
 SALT_ALIASES = {
-    "": ["unknown"],
+    "": ["unknown", "skip"],
     "citrate": ["citric"],
     "ascorbate": ["vit-c"],
     "fumarate": ["fum"],
@@ -71,7 +71,7 @@ SALT_ALIASES = {
     "hemihydrate": [],
 }
 SALT_CHOICES = [
-    "Unknown",
+    "Skip",
     "Neutral",
     "Acid",
     "freebase",
