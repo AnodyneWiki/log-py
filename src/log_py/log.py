@@ -51,6 +51,12 @@ ACTION_EDIT_SUPPLY_STACK = "Supplies"
 ACTION_EDIT_STASH = "Stash"
 ACTION_SETTINGS = "Settings"
 ACTION_STATISTICS = "Statistics"
+ACTION_HISTORY = "History"
+HISTORY_PAGE_SIZE = 100
+HISTORY_NEXT_CHOICE = f"Next {HISTORY_PAGE_SIZE}"
+HISTORY_EDIT_CHOICE = "Edit"
+HISTORY_REMOVE_CHOICE = "Remove"
+LOG_COLUMNS = ["timestamp", "user", "substance", "dosage", "roa", "site", "salt", "note"]
 SUPPLY_ACTION_ADD = "Add"
 SUPPLY_ACTION_REMOVE = "Remove"
 SUPPLY_ACTION_ADD_NEW = "Add new"
@@ -95,6 +101,7 @@ ACTION_ALIASES = {
     ACTION_EDIT_STASH: ["stash", "substance stash", "edit stash"],
     ACTION_SETTINGS: ["settings", "config", "preferences"],
     ACTION_STATISTICS: ["statistics", "stats"],
+    ACTION_HISTORY: ["history", "logs"],
 }
 STATISTICS_TIMESCALE_DAILY = "daily"
 STATISTICS_TIMESCALE_WEEKLY = "weekly"
@@ -2015,7 +2022,7 @@ def _select_prompt_action(mode: InputMode) -> str:
         mode,
         "Action",
         ACTION_LOG_INGESTION,
-        [ACTION_LOG_INGESTION, ACTION_EDIT_SUPPLY_STACK, ACTION_EDIT_STASH, ACTION_STATISTICS, ACTION_SETTINGS],
+        [ACTION_LOG_INGESTION, ACTION_EDIT_SUPPLY_STACK, ACTION_EDIT_STASH, ACTION_HISTORY, ACTION_STATISTICS, ACTION_SETTINGS],
         ACTION_ALIASES,
     )
 
@@ -3135,6 +3142,162 @@ def _show_statistics(mode: InputMode, logfile: Path) -> None:
             _show_statistics_lines(mode, section, _statistics_substance_lines(period))
         elif section == STATISTICS_SECTION_ROUTES:
             _show_statistics_lines(mode, section, _statistics_route_lines(period))
+
+
+def _read_log_rows(logfile: Path) -> list[list[str]]:
+    if not logfile.exists():
+        return []
+    with open(logfile, newline="") as infile:
+        return list(csv.reader(infile))
+
+
+def _is_log_header_row(row: list[str]) -> bool:
+    return bool(row) and row[0].strip().lower() == "timestamp"
+
+
+def _refresh_log_choices_fingerprint(logfile: Path) -> None:
+    """Keep the cached menu choices valid after an in-place log edit, so the
+    whole history is not rescanned (or re-synced) on the next prompt."""
+    cache = _load_prompt_options_cache()
+    entry = cache.get(_logfile_cache_key(logfile))
+    if not isinstance(entry, dict):
+        return
+    entry["fingerprint"] = _logfile_fingerprint(logfile)
+    _write_prompt_options_cache(cache)
+
+
+def _write_log_rows(logfile: Path, rows: list[list[str]]) -> None:
+    tmpfile = logfile.with_suffix(f"{logfile.suffix}.tmp")
+    with open(tmpfile, "w", newline="") as outfile:
+        csv.writer(outfile).writerows(rows)
+    tmpfile.replace(logfile)
+    _refresh_log_choices_fingerprint(logfile)
+
+
+def _padded_log_row(row: list[str]) -> list[str]:
+    return [*row, *([""] * (len(LOG_COLUMNS) - len(row)))]
+
+
+def _history_entry_label(row: list[str]) -> str:
+    padded = _padded_log_row(row)
+    timestamp = _parse_log_timestamp(padded[0])
+    when = timestamp.strftime("%Y-%m-%d %H:%M:%S") if timestamp else padded[0]
+    parts = [when, padded[3], padded[2]]
+    if padded[4]:
+        parts.append(f"via {padded[4]}")
+    if padded[5]:
+        parts.append(f"at {padded[5]}")
+    if padded[6]:
+        parts.append(f"[{padded[6]}]")
+    return " ".join(part for part in parts if part)
+
+
+def _normalize_history_value(column: str, value: str) -> str:
+    value = value.strip()
+    if not value:
+        return ""
+    if column == "timestamp":
+        parsed = _parse_log_timestamp(value)
+        if parsed is None:
+            raise typer.BadParameter(f"Could not parse '{value}' as a timestamp")
+        return parsed.isoformat(timespec="milliseconds")
+    if column == "substance":
+        return _resolve_alias(value, SUBSTANCE_ALIASES) or value
+    if column == "dosage":
+        return _format_dosage_expression(value)
+    if column == "roa":
+        return _format_route_for_log(value) or value
+    if column == "site":
+        return _logged_site(value) or ""
+    if column == "salt":
+        return _format_salt_for_log(_resolve_alias(value, SALT_ALIASES)) or ""
+    return value
+
+
+def _edit_history_fields(mode: InputMode, logfile: Path, row_index: int) -> None:
+    while True:
+        rows = _read_log_rows(logfile)
+        if row_index >= len(rows):
+            return
+        row = _padded_log_row(rows[row_index])
+        labels_by_value = {
+            column: f"{column}: {value}" if value else column
+            for column, value in zip(LOG_COLUMNS, row)
+        }
+        selected = _select_statistics_choice(mode, "Edit log", LOG_COLUMNS, labels_by_value)
+        if selected == BACK_CHOICE:
+            return
+        if selected not in LOG_COLUMNS:
+            raise typer.BadParameter(f"Unknown log field: {selected}")
+        column_index = LOG_COLUMNS.index(selected)
+        current = row[column_index]
+        if mode == InputMode.prompt:
+            new_value = _prompt_for_value(selected, current, optional=True)
+        else:
+            new_value = _menu_for_value(
+                mode.value,
+                selected,
+                current,
+                candidates=[current] if current else [],
+                optional=True,
+                keep_custom_prefix=selected == "dosage",
+            )
+        row[column_index] = _normalize_history_value(selected, new_value or "")
+        rows[row_index] = row
+        _write_log_rows(logfile, rows)
+        con.print(f"Updated {selected}.")
+
+
+def _edit_history_entry(mode: InputMode, logfile: Path, row_index: int) -> None:
+    while True:
+        rows = _read_log_rows(logfile)
+        if row_index >= len(rows) or _is_log_header_row(rows[row_index]):
+            return
+        action = _select_statistics_choice(
+            mode,
+            _history_entry_label(rows[row_index]),
+            [HISTORY_EDIT_CHOICE, HISTORY_REMOVE_CHOICE],
+        )
+        if action == BACK_CHOICE:
+            return
+        if action == HISTORY_REMOVE_CHOICE:
+            del rows[row_index]
+            _write_log_rows(logfile, rows)
+            con.print("Removed log entry.")
+            return
+        if action == HISTORY_EDIT_CHOICE:
+            _edit_history_fields(mode, logfile, row_index)
+            continue
+        raise typer.BadParameter(f"Unknown history action: {action}")
+
+
+def _show_history(mode: InputMode, logfile: Path) -> None:
+    offset = 0
+    while True:
+        rows = _read_log_rows(logfile)
+        entries = [(index, row) for index, row in enumerate(rows) if row and not _is_log_header_row(row)]
+        entries.reverse()
+        page = entries[offset:offset + HISTORY_PAGE_SIZE]
+        if not page and offset:
+            offset = max(0, offset - HISTORY_PAGE_SIZE)
+            continue
+        if not page:
+            con.print("No logs found.")
+            return
+        choices = [str(index) for index, _ in page]
+        labels_by_value = {str(index): _history_entry_label(row) for index, row in page}
+        if offset + HISTORY_PAGE_SIZE < len(entries):
+            choices.append(HISTORY_NEXT_CHOICE)
+            labels_by_value[HISTORY_NEXT_CHOICE] = HISTORY_NEXT_CHOICE
+        selected = _select_statistics_choice(mode, "History", choices, labels_by_value)
+        if selected == BACK_CHOICE:
+            return
+        if selected == HISTORY_NEXT_CHOICE:
+            offset += HISTORY_PAGE_SIZE
+            continue
+        if selected not in labels_by_value:
+            raise typer.BadParameter(f"Unknown log entry: {selected}")
+        _edit_history_entry(mode, logfile, int(selected))
 
 
 def _format_list_value(values: list[str | None]) -> str | None:
@@ -4465,7 +4628,10 @@ def log_ingestion(
                     "notify": notify,
                 },
             )
-            raise typer.Exit(0)
+            return False
+        if action == ACTION_HISTORY:
+            _show_history(mode, _require_option("--csv", logfile))
+            return False
         if action != ACTION_LOG_INGESTION:
             raise typer.BadParameter(f"Unknown action: {action}")
         return True

@@ -102,6 +102,8 @@ logpy --bemenu
 # logpy --fuzzel
 ```
 
+The main action menu also offers a "History" entry. It lists the newest 100 logged ingestions, with a "Next 100" choice at the end for older pages. Selecting an entry offers "Edit", which changes one field of that row at a time, and "Remove", which deletes the row. Both rewrite the CSV in place and keep the cached menu choices valid, so the whole history is not rescanned afterwards.
+
 ## Flags
 
 | Flag | Short | Description |
