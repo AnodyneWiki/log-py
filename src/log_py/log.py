@@ -106,6 +106,38 @@ ACTION_ALIASES = {
     ACTION_STATISTICS: ["statistics", "stats"],
     ACTION_HISTORY: ["history", "logs"],
 }
+
+# Icon names (Adwaita symbolic) attached to menu choices in fuzzel mode.
+MENU_ICONS = {
+    ACTION_LOG_INGESTION: "list-add-symbolic",
+    ACTION_EDIT_SUPPLY_STACK: "applications-science-symbolic",
+    ACTION_EDIT_STASH: "package-x-generic-symbolic",
+    ACTION_HISTORY: "document-open-recent-symbolic",
+    ACTION_STATISTICS: "x-office-spreadsheet-symbolic",
+    ACTION_SETTINGS: "emblem-system-symbolic",
+    BACK_CHOICE: "go-previous-symbolic",
+    DONE_SUBSTANCE_CHOICE: "go-next-symbolic",
+    SKIP_CHOICE: "go-jump-symbolic",
+    LEGACY_UNKNOWN_CHOICE: "dialog-question-symbolic",
+    HISTORY_NEXT_CHOICE: "go-down-symbolic",
+    HISTORY_EDIT_CHOICE: "document-edit-symbolic",
+    HISTORY_REMOVE_CHOICE: "edit-delete-symbolic",
+    SUPPLY_ACTION_ADD: "list-add-symbolic",
+    SUPPLY_ACTION_REMOVE: "list-remove-symbolic",
+    SUPPLY_ACTION_ADD_NEW: "document-new-symbolic",
+    SUPPLY_ACTION_ADD_SYRINGE: "list-add-symbolic",
+    SUPPLY_ACTION_ADD_NEEDLE: "list-add-symbolic",
+    SUPPLY_ACTION_SPECIFY_NEW_SYRINGE: "document-new-symbolic",
+    SUPPLY_ACTION_SPECIFY_NEW_NEEDLE: "document-new-symbolic",
+    SUPPLY_ACTION_REUSE_SYRINGE: "view-refresh-symbolic",
+    SUPPLY_ACTION_REUSE_NEEDLE: "view-refresh-symbolic",
+    EXTRA_INFO_SKIP_CHOICE: "go-jump-symbolic",
+    EXTRA_INFO_SHOW_CHOICE: "view-more-symbolic",
+    "Yes": "emblem-ok-symbolic",
+    "No": "window-close-symbolic",
+    EMPTY_NOTE_CHOICE: "edit-clear-symbolic",
+    NOW_TIME_CHOICE: "alarm-symbolic",
+}
 STATISTICS_TIMESCALE_DAILY = "daily"
 STATISTICS_TIMESCALE_WEEKLY = "weekly"
 STATISTICS_TIMESCALE_MONTHLY = "monthly"
@@ -179,6 +211,15 @@ MENU_MOUSE_ENABLED = True
 MENU_TOOL_COMMAND: list[str] = []
 MENU_PROMPT_PLACEHOLDER = "{prompt}"
 FUZZEL_MENU_TOOL = "fuzzel --dmenu"
+MENU_ICON_DIRS = [
+    "/usr/share/icons/Adwaita/symbolic/legacy",
+    "/usr/share/icons/Adwaita/symbolic/actions",
+    "/usr/share/icons/Adwaita/symbolic/categories",
+    "/usr/share/icons/Adwaita/symbolic/emblems",
+    "/usr/share/icons/Adwaita/symbolic/mimetypes",
+    "/usr/share/icons/Adwaita/symbolic/status",
+    "/usr/share/icons/Adwaita/symbolic/ui",
+]
 
 
 class BackRequested(Exception):
@@ -808,6 +849,25 @@ def _menu_tool_command(label: str) -> list[str]:
     return [*MENU_TOOL_COMMAND, "-p", label]
 
 
+def _menu_icons_enabled() -> bool:
+    return bool(MENU_TOOL_COMMAND) and Path(MENU_TOOL_COMMAND[0]).name == "fuzzel"
+
+
+def _menu_icon_path(icon_name: str) -> str:
+    for directory in MENU_ICON_DIRS:
+        candidate = Path(directory) / f"{icon_name}.svg"
+        if candidate.is_file():
+            return str(candidate)
+    return icon_name
+
+
+def _menu_entry_with_icon(label: str, value: str | None) -> str:
+    icon_name = MENU_ICONS.get(value or "") or MENU_ICONS.get(label)
+    if not icon_name:
+        return label
+    return f"{label}\0icon\x1f{_menu_icon_path(icon_name)}"
+
+
 def _menu_for_value(
     executable: str,
     label: str,
@@ -832,7 +892,11 @@ def _menu_for_value(
     if allow_back:
         menu_candidates = [*menu_candidates, BACK_CHOICE]
     labels, label_values = _menu_candidates(menu_candidates, aliases, labels_by_value, keep_custom_prefix)
-    menu_input = "\n".join(labels)
+    if executable == InputMode.menu.value and _menu_icons_enabled():
+        menu_lines = [_menu_entry_with_icon(item, label_values.get(item)) for item in labels]
+    else:
+        menu_lines = labels
+    menu_input = "\n".join(menu_lines)
     if menu_input:
         menu_input += "\n"
     if executable == InputMode.menu.value:
