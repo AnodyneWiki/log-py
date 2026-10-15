@@ -858,8 +858,12 @@ def _menu_candidates(
         candidate = candidate.strip() if keep_custom_prefix else _strip_base_menu_choice_marker(candidate)
         if not candidate:
             continue
-        canonical = _format_route_for_log(candidate) if aliases is ROA_ALIASES else None
-        canonical = canonical or _resolve_alias(candidate, aliases) or candidate
+        if _alias_key(candidate) == _alias_key(BACK_CHOICE):
+            # The back choice is navigation, not a value: keep its label as is.
+            canonical = BACK_CHOICE
+        else:
+            canonical = _format_route_for_log(candidate) if aliases is ROA_ALIASES else None
+            canonical = canonical or _resolve_alias(candidate, aliases) or candidate
         key = _alias_key(canonical)
         if key in seen:
             continue
