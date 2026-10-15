@@ -2,6 +2,7 @@ import csv
 import ast
 import dateparser
 import io
+import importlib.resources
 import json
 import re
 import shlex
@@ -107,7 +108,9 @@ ACTION_ALIASES = {
     ACTION_HISTORY: ["history", "logs"],
 }
 
-# Icon names (Adwaita symbolic) attached to menu choices in fuzzel mode.
+# Icons attached to menu choices in fuzzel mode. The SVG files ship inside the
+# package (src/log_py/icons, copied from Adwaita's symbolic set), so they do
+# not depend on the icon theme installed on the system.
 MENU_ICONS = {
     ACTION_LOG_INGESTION: "list-add-symbolic",
     ACTION_EDIT_SUPPLY_STACK: "applications-science-symbolic",
@@ -211,15 +214,7 @@ MENU_MOUSE_ENABLED = True
 MENU_TOOL_COMMAND: list[str] = []
 MENU_PROMPT_PLACEHOLDER = "{prompt}"
 FUZZEL_MENU_TOOL = "fuzzel --dmenu"
-MENU_ICON_DIRS = [
-    "/usr/share/icons/Adwaita/symbolic/legacy",
-    "/usr/share/icons/Adwaita/symbolic/actions",
-    "/usr/share/icons/Adwaita/symbolic/categories",
-    "/usr/share/icons/Adwaita/symbolic/emblems",
-    "/usr/share/icons/Adwaita/symbolic/mimetypes",
-    "/usr/share/icons/Adwaita/symbolic/status",
-    "/usr/share/icons/Adwaita/symbolic/ui",
-]
+MENU_ICON_PACKAGE_DIR = "icons"
 
 
 class BackRequested(Exception):
@@ -854,10 +849,12 @@ def _menu_icons_enabled() -> bool:
 
 
 def _menu_icon_path(icon_name: str) -> str:
-    for directory in MENU_ICON_DIRS:
-        candidate = Path(directory) / f"{icon_name}.svg"
-        if candidate.is_file():
-            return str(candidate)
+    bundled = importlib.resources.files(__package__ or "log_py") / MENU_ICON_PACKAGE_DIR / f"{icon_name}.svg"
+    try:
+        if bundled.is_file():
+            return str(bundled)
+    except (OSError, TypeError):
+        pass
     return icon_name
 
 

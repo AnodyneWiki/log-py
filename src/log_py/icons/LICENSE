@@ -1,0 +1,12 @@
+The SVG icons in this directory are symbolic icons from the Adwaita icon
+theme by the GNOME Project (https://www.gnome.org), copied unmodified so that
+logpy's fuzzel menus do not depend on the icon theme installed on the system.
+
+They are licensed under the terms of either the GNU Lesser General Public
+License version 3 or the Creative Commons Attribution-Share Alike 3.0 United
+States License, at your option.
+
+  https://www.gnu.org/licenses/lgpl-3.0.html
+  https://creativecommons.org/licenses/by-sa/3.0/
+
+Source: https://download.gnome.org/sources/adwaita-icon-theme/

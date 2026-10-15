@@ -98,7 +98,7 @@ logpy --dmenu
 # "bemenu" mode
 logpy --bemenu
 
-# "fuzzel" mode (same as --menu-tool "fuzzel --dmenu", with Adwaita symbolic icons on the choices)
+# "fuzzel" mode (same as --menu-tool "fuzzel --dmenu", with icons on the choices; the icons ship with logpy)
 logpy --fuzzel
 
 # custom menu mode with any dmenu-style command
