@@ -63,6 +63,9 @@ USERPAGE_ADD_KEY_CHOICE = "Add key"
 USERPAGE_ADD_ITEM_CHOICE = "Add item"
 USERPAGE_REMOVE_CHOICE = "Remove"
 USERPAGE_CLOSE_CHOICE = "Close"
+USERPAGE_RESET_CHOICE = "Reset userpage to anodyne api output"
+USERPAGE_ANNOTATE_CHOICE = "Add annotations"
+USERPAGE_MANUAL_CHOICE = "Manually edit userpage"
 JSON_NAME_KEY = "Name"
 JSON_MISSING_PREFIX = "missing:"
 USERPAGE_SUBSTANCES_KEY = "TriedSubstances"
@@ -136,6 +139,9 @@ MENU_ICONS = {
     USERPAGE_ADD_KEY_CHOICE: "list-add-symbolic",
     USERPAGE_ADD_ITEM_CHOICE: "list-add-symbolic",
     USERPAGE_CLOSE_CHOICE: "window-close-symbolic",
+    USERPAGE_RESET_CHOICE: "view-refresh-symbolic",
+    USERPAGE_ANNOTATE_CHOICE: "list-add-symbolic",
+    USERPAGE_MANUAL_CHOICE: "document-edit-symbolic",
     ACTION_STATISTICS: "x-office-spreadsheet-symbolic",
     ACTION_SETTINGS: "emblem-system-symbolic",
     BACK_CHOICE: "go-previous-symbolic",
@@ -394,20 +400,20 @@ def _anodyne_userpage_api_url(userpage: str | None) -> str | None:
     return f"{match.group('base')}/api/user/{match.group('name')}"
 
 
-def _ensure_userpage_cache(userpage: str | None) -> None:
-    """Download the AnodyneWiki user API document to userpage.json once."""
-    if USERPAGE_CACHE_FILE.exists():
-        return
+def _download_userpage(userpage: str | None) -> bool:
+    """Download the AnodyneWiki user API document over userpage.json.
+    Returns True when the file was written."""
     api_url = _anodyne_userpage_api_url(userpage)
     if not api_url:
-        return
+        err_con.print("Userpage is not an anodyne.wiki user page; nothing to download", style="bold yellow")
+        return False
     try:
         response = requests.get(api_url, timeout=5)
         response.raise_for_status()
         data = response.json()
     except Exception as exc:
         err_con.print(f"Userpage download failed: '{exc}'", style="bold yellow")
-        return
+        return False
     try:
         USERPAGE_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
         tmpfile = USERPAGE_CACHE_FILE.with_suffix(f"{USERPAGE_CACHE_FILE.suffix}.tmp")
@@ -417,8 +423,16 @@ def _ensure_userpage_cache(userpage: str | None) -> None:
         tmpfile.replace(USERPAGE_CACHE_FILE)
     except OSError as exc:
         err_con.print(f"Could not write {USERPAGE_CACHE_FILE}: '{exc}'", style="bold yellow")
-        return
+        return False
     con.print(f"Saved userpage to {USERPAGE_CACHE_FILE}.")
+    return True
+
+
+def _ensure_userpage_cache(userpage: str | None) -> None:
+    """Download the AnodyneWiki user API document to userpage.json once."""
+    if USERPAGE_CACHE_FILE.exists() or not _anodyne_userpage_api_url(userpage):
+        return
+    _download_userpage(userpage)
 
 
 def _fetch_substance_entry(substance: str) -> dict[str, object] | None:
@@ -3787,6 +3801,27 @@ def _edit_json_container(mode: InputMode, root: object, path: list[object]) -> N
         raise typer.BadParameter(f"Unknown userpage choice: {selected}")
 
 
+def _userpage_menu(mode: InputMode, userpage: str | None) -> None:
+    while True:
+        choice = _select_statistics_choice(
+            mode,
+            ACTION_USERPAGE,
+            [USERPAGE_RESET_CHOICE, USERPAGE_ANNOTATE_CHOICE, USERPAGE_MANUAL_CHOICE],
+        )
+        if choice == BACK_CHOICE:
+            return
+        if choice == USERPAGE_RESET_CHOICE:
+            _download_userpage(userpage)
+            continue
+        if choice == USERPAGE_ANNOTATE_CHOICE:
+            con.print("Add annotations is not available yet.")
+            continue
+        if choice == USERPAGE_MANUAL_CHOICE:
+            _edit_userpage(mode)
+            continue
+        raise typer.BadParameter(f"Unknown userpage choice: {choice}")
+
+
 def _edit_userpage(mode: InputMode) -> None:
     root = _load_userpage_json()
     if not isinstance(root, (dict, list)):
@@ -5294,7 +5329,7 @@ def log_ingestion(
             )
             return False
         if action == ACTION_USERPAGE:
-            _edit_userpage(mode)
+            _userpage_menu(mode, userpage)
             return False
         if action == ACTION_HISTORY:
             _show_history(mode, _require_option("--csv", logfile), webhook, userpage)
