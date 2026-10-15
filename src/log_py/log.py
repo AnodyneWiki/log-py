@@ -83,6 +83,12 @@ EXTRA_INFO_ALIASES = {
     "No": ["n"],
     "Yes": ["y"],
 }
+EXTRA_INFO_SKIP_CHOICE = "Skip"
+EXTRA_INFO_SHOW_CHOICE = "Show"
+EXTRA_INFO_CHOICE_ALIASES = {
+    EXTRA_INFO_SKIP_CHOICE: [],
+    EXTRA_INFO_SHOW_CHOICE: [],
+}
 ACTION_ALIASES = {
     ACTION_LOG_INGESTION: ["log", "ingestion", "li"],
     ACTION_EDIT_SUPPLY_STACK: ["supply", "stack", "edit supply", "ess"],
@@ -2614,17 +2620,17 @@ def _menu_for_extra_info(
         add_extra_info = _menu_for_value(
             executable,
             EXTRA_INFO_PROMPT,
-            "No",
-            candidates=["No", "Yes"],
-            aliases=EXTRA_INFO_ALIASES,
+            EXTRA_INFO_SKIP_CHOICE,
+            candidates=[EXTRA_INFO_SKIP_CHOICE, EXTRA_INFO_SHOW_CHOICE],
+            aliases=EXTRA_INFO_CHOICE_ALIASES,
             optional=True,
             allow_back=allow_back,
         )
         if add_extra_info is None:
             return note, time, False
-        if add_extra_info == "No":
+        if add_extra_info == EXTRA_INFO_SKIP_CHOICE:
             return note, time, False
-        if add_extra_info == "Yes":
+        if add_extra_info == EXTRA_INFO_SHOW_CHOICE:
             while True:
                 try:
                     selected_note = _menu_for_value(
