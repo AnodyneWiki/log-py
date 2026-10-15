@@ -3529,17 +3529,6 @@ def _format_site_usage_label(usage: tuple[int, int, int, int]) -> str:
     return f"{{d:{usage[0]} w:{usage[1]} m:{usage[2]} t:{usage[3]}}}"
 
 
-def _site_choice_labels(values: list[str], counts: dict[str, tuple[int, int, int, int]]) -> dict[str, str]:
-    labels = {}
-    for value in values:
-        if _is_unknown_site(value):
-            labels[value] = value
-            continue
-        usage = counts.get(_iv_site_key(value), (0, 0, 0, 0))
-        labels[value] = f"{value} {_format_site_usage_label(usage)}"
-    return labels
-
-
 def _site_choice_label(value: str, count_key: str, counts: dict[str, tuple[int, int, int, int]]) -> str:
     usage = counts.get(count_key, (0, 0, 0, 0))
     return f"{value} {_format_site_usage_label(usage)}"
@@ -3578,7 +3567,6 @@ def _menu_for_site(
             "Vein",
             current_vein,
             candidates=vein_candidates,
-            labels_by_value=_site_choice_labels(vein_candidates, site_counts),
             optional=True,
             allow_back=allow_back,
         )
