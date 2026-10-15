@@ -33,15 +33,18 @@ SUPPLY_CACHE_FILE = app_dir / "supplies.json"
 SUPPLY_CACHE_VERSION = 1
 STASH_CACHE_FILE = app_dir / "stash.json"
 STASH_CACHE_VERSION = 1
-DONE_SUBSTANCE_CHOICE = "None"
-UNKNOWN_SUBSTANCE_CHOICE = "Unknown"
-UNKNOWN_SITE_CHOICE = "Unknown"
-UNKNOWN_VOLUME_CHOICE = "unknown"
-UNKNOWN_GAUGE_CHOICE = "unknown"
-UNKNOWN_LENGTH_CHOICE = "unknown"
+SKIP_CHOICE = "Skip"
+LEGACY_UNKNOWN_CHOICE = "Unknown"
+UNKNOWN_SUBSTANCE_TITLE = "Unknown"
+DONE_SUBSTANCE_CHOICE = ">"
+UNKNOWN_SUBSTANCE_CHOICE = SKIP_CHOICE
+UNKNOWN_SITE_CHOICE = SKIP_CHOICE
+UNKNOWN_VOLUME_CHOICE = SKIP_CHOICE
+UNKNOWN_GAUGE_CHOICE = SKIP_CHOICE
+UNKNOWN_LENGTH_CHOICE = SKIP_CHOICE
 EMPTY_NOTE_CHOICE = "No note"
 NOW_TIME_CHOICE = "now"
-BACK_CHOICE = "back"
+BACK_CHOICE = "<"
 MENU_CUSTOM_PREFIX = "~"
 ACTION_LOG_INGESTION = "Add ingestion"
 ACTION_EDIT_SUPPLY_STACK = "Supplies"
@@ -57,7 +60,7 @@ SUPPLY_ACTION_SPECIFY_NEW_SYRINGE = "Specify a new syringe type"
 SUPPLY_ACTION_SPECIFY_NEW_NEEDLE = "Specify a new needle type"
 SUPPLY_ACTION_REUSE_SYRINGE = "Reuse syringe"
 SUPPLY_ACTION_REUSE_NEEDLE = "Reuse needle"
-SUPPLY_ACTION_SKIP = "Skip requirement"
+SUPPLY_ACTION_SKIP = SKIP_CHOICE
 SUPPLY_ACTION_DONE = "Done"
 NON_DISPOSABLE_SYRINGE_TOKEN = "non-disposable"
 # Populated only from AnodyneWiki API responses cached in SUBSTANCE_CACHE_FILE.
@@ -103,7 +106,7 @@ SUPPLY_ACTION_ALIASES = {
     SUPPLY_ACTION_SPECIFY_NEW_NEEDLE: ["new needle", "specify needle"],
     SUPPLY_ACTION_REUSE_SYRINGE: ["reuse syringe", "reused syringe", "rs"],
     SUPPLY_ACTION_REUSE_NEEDLE: ["reuse needle", "reused needle", "rn"],
-    SUPPLY_ACTION_SKIP: ["skip requirement", "skip", "none", "s"],
+    SUPPLY_ACTION_SKIP: ["skip requirement", "s"],
     SUPPLY_ACTION_DONE: ["done", "quit", "exit"],
 }
 EXTRA_INFO_PROMPT = "Extra options? (note, time, dosage by volume)"
@@ -640,7 +643,15 @@ def _coalesce(*values: str | None) -> str | None:
 
 
 def _alias_key(value: str) -> str:
-    return "".join(char for char in value.casefold() if char.isalnum())
+    stripped = value.strip()
+    key = "".join(char for char in stripped.casefold() if char.isalnum())
+    return key or stripped
+
+
+def _is_skip_choice(value: str | None) -> bool:
+    if not value:
+        return False
+    return _alias_key(value) in (_alias_key(SKIP_CHOICE), _alias_key(LEGACY_UNKNOWN_CHOICE))
 
 
 def _supply_key_part(value: str) -> str:
@@ -923,7 +934,7 @@ def _format_solution_volume(volume: str | None) -> str | None:
     if not volume:
         return None
     volume = volume.strip()
-    if not volume or _alias_key(volume) == _alias_key(UNKNOWN_VOLUME_CHOICE):
+    if not volume or _is_skip_choice(volume):
         return None
     match = VOLUME_RE.match(volume)
     if not match:
@@ -1026,7 +1037,7 @@ def _format_needle_gauge(gauge: str | None) -> str | None:
     if not gauge:
         return None
     gauge = gauge.strip()
-    if not gauge or _alias_key(gauge) == _alias_key(UNKNOWN_GAUGE_CHOICE):
+    if not gauge or _is_skip_choice(gauge):
         return None
     match = GAUGE_RE.match(gauge)
     if not match:
@@ -1053,7 +1064,7 @@ def _format_needle_length(length: str | None) -> str | None:
     if not length:
         return None
     length = length.strip()
-    if not length or _alias_key(length) == _alias_key(UNKNOWN_LENGTH_CHOICE):
+    if not length or _is_skip_choice(length):
         return None
     match = LENGTH_RE.match(length)
     if not match:
@@ -1471,7 +1482,7 @@ def _prompt_for_supply_entry(label: str, kind: str) -> dict[str, object] | None:
     entries = _available_supply_entries(kind)
     reuse_action = _supply_reuse_action(label)
     con.print(f"{label}s:")
-    labels = [*[_supply_entry_label(entry) for entry in entries], reuse_action, SUPPLY_ACTION_SKIP]
+    labels = [SUPPLY_ACTION_SKIP, *[_supply_entry_label(entry) for entry in entries], reuse_action]
     for index, choice_label in enumerate(labels, 1):
         con.print(f"{index}. {choice_label}")
     selected = _prompt_for_value(label, "1", optional=False)
@@ -1490,14 +1501,15 @@ def _prompt_for_supply_entry(label: str, kind: str) -> dict[str, object] | None:
         return None
     if labels[selected_index - 1] == reuse_action:
         return _select_reused_supply_entry(InputMode.prompt, label, kind)
-    return entries[selected_index - 1]
+    # Index 1 is the pinned Skip choice, so stack entries start at 2.
+    return entries[selected_index - 2]
 
 
 def _menu_for_supply_entry(executable: str, label: str, kind: str, allow_back: bool = False) -> dict[str, object] | None:
     entries = _available_supply_entries(kind)
     reuse_action = _supply_reuse_action(label)
     labels = [_supply_entry_label(entry) for entry in entries]
-    choices = [*labels, reuse_action, SUPPLY_ACTION_SKIP]
+    choices = [SUPPLY_ACTION_SKIP, *labels, reuse_action]
     selected_label = _menu_for_value(
         executable,
         label,
@@ -3235,7 +3247,7 @@ def _format_iv_site(vein: str | None, side: str | None) -> str | None:
 
 
 def _is_unknown_site(site: str | None) -> bool:
-    return bool(site and _alias_key(site) == _alias_key(UNKNOWN_SITE_CHOICE))
+    return _is_skip_choice(site)
 
 
 def _logged_site(site: str | None) -> str | None:
@@ -4078,8 +4090,8 @@ def _resolve_cached_substance_title(substance: str) -> str | None:
 
 
 def _lookup_single_substance_title(substance: str, accept = None) -> tuple[str, str]:
-    if _alias_key(substance) == _alias_key(UNKNOWN_SUBSTANCE_CHOICE) and accept != "strict":
-        return UNKNOWN_SUBSTANCE_CHOICE, UNKNOWN_SUBSTANCE_CHOICE
+    if _is_skip_choice(substance) and accept != "strict":
+        return UNKNOWN_SUBSTANCE_TITLE, UNKNOWN_SUBSTANCE_TITLE
 
     entry, not_found = _fetch_substance_entry_result(substance)
     if entry:
