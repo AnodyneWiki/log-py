@@ -3281,7 +3281,9 @@ def _show_history(mode: InputMode, logfile: Path) -> None:
         if offset + HISTORY_PAGE_SIZE < len(entries):
             choices.append(HISTORY_NEXT_CHOICE)
             labels_by_value[HISTORY_NEXT_CHOICE] = HISTORY_NEXT_CHOICE
-        selected = _select_statistics_choice(mode, "History", choices, labels_by_value)
+        page_number = offset // HISTORY_PAGE_SIZE + 1
+        page_count = (len(entries) + HISTORY_PAGE_SIZE - 1) // HISTORY_PAGE_SIZE
+        selected = _select_statistics_choice(mode, f"History ({page_number} of {page_count})", choices, labels_by_value)
         if selected == BACK_CHOICE:
             return
         if selected == HISTORY_NEXT_CHOICE:
