@@ -62,6 +62,8 @@ ACTION_USERPAGE = "Userpage"
 USERPAGE_ADD_KEY_CHOICE = "Add key"
 USERPAGE_ADD_ITEM_CHOICE = "Add item"
 USERPAGE_REMOVE_CHOICE = "Remove"
+USERPAGE_CLOSE_CHOICE = "Close"
+JSON_NAME_KEY = "Name"
 JSON_ENTRY_PREFIX = "entry:"
 HISTORY_PAGE_SIZE = 100
 HISTORY_NEXT_CHOICE = f"Next {HISTORY_PAGE_SIZE}"
@@ -126,6 +128,7 @@ MENU_ICONS = {
     ACTION_USERPAGE: "avatar-default-symbolic",
     USERPAGE_ADD_KEY_CHOICE: "list-add-symbolic",
     USERPAGE_ADD_ITEM_CHOICE: "list-add-symbolic",
+    USERPAGE_CLOSE_CHOICE: "window-close-symbolic",
     ACTION_STATISTICS: "x-office-spreadsheet-symbolic",
     ACTION_SETTINGS: "emblem-system-symbolic",
     BACK_CHOICE: "go-previous-symbolic",
@@ -3338,9 +3341,10 @@ def _select_statistics_choice(
     label: str,
     choices: list[str],
     labels_by_value: dict[str, str] | None = None,
+    back_choice: str = BACK_CHOICE,
 ) -> str:
-    choices = [*choices, BACK_CHOICE]
-    labels_by_value = {**(labels_by_value or {}), BACK_CHOICE: BACK_CHOICE}
+    choices = [*choices, back_choice]
+    labels_by_value = {**(labels_by_value or {}), back_choice: back_choice}
     if mode == InputMode.prompt:
         labels = [labels_by_value.get(choice, choice) for choice in choices]
         _print_prompt_choices(label, labels)
@@ -3362,7 +3366,7 @@ def _select_statistics_choice(
         candidates=choices,
         labels_by_value=labels_by_value,
     )
-    return selected or BACK_CHOICE
+    return selected or back_choice
 
 
 def _show_statistics(mode: InputMode, logfile: Path) -> None:
@@ -3610,6 +3614,9 @@ def _write_userpage_json(data: object) -> None:
 
 def _json_summary(value: object) -> str:
     if isinstance(value, dict):
+        name = value.get(JSON_NAME_KEY)
+        if isinstance(name, str) and name.strip():
+            return name
         return f"{{{len(value)} keys}}"
     if isinstance(value, list):
         return f"[{len(value)} items]"
@@ -3671,8 +3678,10 @@ def _edit_json_container(mode: InputMode, root: object, path: list[object]) -> N
         if keys:
             actions.append(USERPAGE_REMOVE_CHOICE)
         labels_by_value.update({action: action for action in actions})
-        selected = _select_statistics_choice(mode, title, [*entry_ids, *actions], labels_by_value)
-        if selected == BACK_CHOICE:
+        selected = _select_statistics_choice(
+            mode, title, [*entry_ids, *actions], labels_by_value, back_choice=USERPAGE_CLOSE_CHOICE
+        )
+        if selected == USERPAGE_CLOSE_CHOICE:
             return
         if selected == USERPAGE_ADD_KEY_CHOICE:
             key = (_prompt_json_text(mode, "Key", None) or "").strip()
@@ -3697,8 +3706,10 @@ def _edit_json_container(mode: InputMode, root: object, path: list[object]) -> N
             con.print("Added item.")
             continue
         if selected == USERPAGE_REMOVE_CHOICE:
-            target = _select_statistics_choice(mode, f"{title} / {USERPAGE_REMOVE_CHOICE}", entry_ids, labels_by_value)
-            if target == BACK_CHOICE or not target.startswith(JSON_ENTRY_PREFIX):
+            target = _select_statistics_choice(
+                mode, f"{title} / {USERPAGE_REMOVE_CHOICE}", entry_ids, labels_by_value, back_choice=USERPAGE_CLOSE_CHOICE
+            )
+            if target == USERPAGE_CLOSE_CHOICE or not target.startswith(JSON_ENTRY_PREFIX):
                 continue
             key = keys[int(target[len(JSON_ENTRY_PREFIX):])]
             del container[key]
