@@ -74,7 +74,19 @@ JSON_NAME_KEY = "Name"
 JSON_MISSING_PREFIX = "missing:"
 USERPAGE_SUBSTANCES_KEY = "TriedSubstances"
 USERPAGE_ROUTES_KEY = "Routes"
-USERPAGE_ROUTE_FIELDS = ["Name", "Dosage", "Onset", "Comeup", "Duration"]
+USERPAGE_ROUTE_FIELDS = ["Name", "Dosage", "Onset", "Comeup", "Duration", "Aftereffectduration"]
+ANNOTATION_FELT_ONSET = "Felt Onset"
+ANNOTATION_FELT_COMEUP = "Felt Comeup"
+ANNOTATION_FELT_COMEDOWN = "Felt Comedown"
+ANNOTATION_FELT_OVER = "Felt Over"
+ANNOTATION_FELT_EFFECT = "Felt Effect"
+ANNOTATION_ROUTE_FIELDS = {
+    ANNOTATION_FELT_ONSET: "Onset",
+    ANNOTATION_FELT_COMEUP: "Comeup",
+    ANNOTATION_FELT_COMEDOWN: "Duration",
+    ANNOTATION_FELT_OVER: "Aftereffectduration",
+}
+ANNOTATION_RECENT_COUNT = 100
 USERPAGE_SUBSTANCE_LIST_FIELDS = [
     "Classes", "Salts", "Sources", "Indication", "Tolerance", "Effects", "After", "Odor", "Notes",
 ]
@@ -3963,7 +3975,7 @@ def _edit_json_container(mode: InputMode, root: object, path: list[object]) -> N
         raise typer.BadParameter(f"Unknown userpage choice: {selected}")
 
 
-def _userpage_menu(mode: InputMode, userpage: str | None) -> None:
+def _userpage_menu(mode: InputMode, userpage: str | None, logfile: Path | None) -> None:
     while True:
         choice = _select_statistics_choice(
             mode,
@@ -3976,12 +3988,153 @@ def _userpage_menu(mode: InputMode, userpage: str | None) -> None:
             _download_userpage(userpage)
             continue
         if choice == USERPAGE_ANNOTATE_CHOICE:
-            con.print("Add annotations is not available yet.")
+            _add_userpage_annotations(mode, logfile)
             continue
         if choice == USERPAGE_MANUAL_CHOICE:
             _edit_userpage(mode)
             continue
         raise typer.BadParameter(f"Unknown userpage choice: {choice}")
+
+
+def _format_elapsed(delta: timedelta) -> str:
+    """Elapsed time as "45min", "1h 30min" or "2d 3h"."""
+    minutes = max(0, int(delta.total_seconds() // 60))
+    days, rest = divmod(minutes, 24 * 60)
+    hours, mins = divmod(rest, 60)
+    if days:
+        return f"{days}d {hours}h" if hours else f"{days}d"
+    if hours:
+        return f"{hours}h {mins}min" if mins else f"{hours}h"
+    return f"{mins}min"
+
+
+def _userpage_substance_entry(tried: list, name: str) -> dict:
+    """Find or create the TriedSubstances entry for `name`."""
+    name = (_resolve_alias(name, SUBSTANCE_ALIASES) or name).strip()
+    for item in tried:
+        if isinstance(item, dict) and isinstance(item.get(JSON_NAME_KEY), str) and \
+                _alias_key(_resolve_alias(item[JSON_NAME_KEY], SUBSTANCE_ALIASES) or item[JSON_NAME_KEY]) == _alias_key(name):
+            return item
+    entry = {JSON_NAME_KEY: name, USERPAGE_ROUTES_KEY: []}
+    tried.append(entry)
+    return entry
+
+
+def _userpage_route_entry(entry: dict, roa: str) -> dict | None:
+    """Find or create the route object for `roa` in a TriedSubstances entry."""
+    route_name = _format_route_for_log(roa) or roa.strip().casefold()
+    routes = entry.get(USERPAGE_ROUTES_KEY)
+    if routes is None:
+        routes = entry[USERPAGE_ROUTES_KEY] = []
+    if not isinstance(routes, list):
+        return None
+    for item in routes:
+        if isinstance(item, dict) and isinstance(item.get(JSON_NAME_KEY), str) and \
+                (_format_route_for_log(item[JSON_NAME_KEY]) or item[JSON_NAME_KEY].strip().casefold()) == route_name:
+            return item
+    route = {JSON_NAME_KEY: route_name}
+    routes.append(route)
+    return route
+
+
+def _prompt_annotation_text(mode: InputMode, label: str, suggestions: list[str]) -> str | None:
+    """Ask for an annotation value with suggestions; typed text is accepted."""
+    default = suggestions[0] if suggestions else None
+    if mode == InputMode.prompt:
+        return _prompt_for_value(label, default, optional=True)
+    return _menu_for_value(mode.value, label, default, candidates=suggestions, optional=True)
+
+
+def _all_userpage_effects(root: dict) -> list[str]:
+    effects: list[str] = []
+    tried = root.get(USERPAGE_SUBSTANCES_KEY)
+    for item in tried if isinstance(tried, list) else []:
+        values = item.get("Effects") if isinstance(item, dict) else None
+        for value in values if isinstance(values, list) else []:
+            if isinstance(value, str) and value.strip():
+                _append_recent_unique(effects, value)
+    return effects
+
+
+def _annotate_log_entry(mode: InputMode, row: list[str]) -> None:
+    timestamp, _, title, dosage, roa, *_ = _padded_log_row(row)
+    names = [
+        (_resolve_alias(name, SUBSTANCE_ALIASES) or name).strip()
+        for name in (_split_mixture_values(title) or [title])
+    ]
+    names = [name for name in names if name and not _is_skip_choice(name) and _alias_key(name) != _alias_key(UNKNOWN_SUBSTANCE_TITLE)]
+    if not names:
+        err_con.print("This log has no known substance to annotate", style="bold yellow")
+        return
+    logged_at = _parse_log_timestamp(timestamp)
+    while True:
+        choices = [ANNOTATION_FELT_ONSET, ANNOTATION_FELT_COMEUP, ANNOTATION_FELT_COMEDOWN, ANNOTATION_FELT_OVER]
+        if len(names) == 1:
+            choices.append(ANNOTATION_FELT_EFFECT)
+        choice = _select_statistics_choice(mode, _history_entry_label(row), choices)
+        if choice == BACK_CHOICE:
+            return
+        root = _load_userpage_json()
+        if not isinstance(root, dict):
+            raise typer.BadParameter(f"{USERPAGE_CACHE_FILE} does not hold a JSON object")
+        tried = root.get(USERPAGE_SUBSTANCES_KEY)
+        if tried is None:
+            tried = root[USERPAGE_SUBSTANCES_KEY] = []
+        if not isinstance(tried, list):
+            raise typer.BadParameter(f"{USERPAGE_SUBSTANCES_KEY} in {USERPAGE_CACHE_FILE} is not an array")
+
+        if choice in ANNOTATION_ROUTE_FIELDS:
+            field = ANNOTATION_ROUTE_FIELDS[choice]
+            elapsed = _format_elapsed(datetime.now(timezone.utc) - logged_at) if logged_at else None
+            value = _prompt_annotation_text(mode, f"{choice} ({field})", [elapsed] if elapsed else [])
+            if value is None or not value.strip():
+                continue
+            for name in names:
+                route = _userpage_route_entry(_userpage_substance_entry(tried, name), roa)
+                if route is not None:
+                    route[field] = value.strip()
+            _write_userpage_json(root)
+            con.print(f"Set {field} for {', '.join(names)} via {roa}: {value.strip()}")
+            continue
+        if choice == ANNOTATION_FELT_EFFECT:
+            entry = _userpage_substance_entry(tried, names[0])
+            value = _prompt_annotation_text(mode, f"{choice} ({names[0]})", _all_userpage_effects(root))
+            if value is None or not value.strip():
+                continue
+            effects = entry.get("Effects")
+            if effects is None:
+                effects = entry["Effects"] = []
+            if not isinstance(effects, list):
+                err_con.print(f"Effects of {names[0]} is not an array", style="bold yellow")
+                continue
+            if any(isinstance(item, str) and _alias_key(item) == _alias_key(value) for item in effects):
+                con.print(f"{names[0]} already lists the effect {value.strip()}")
+                continue
+            effects.append(value.strip())
+            _write_userpage_json(root)
+            con.print(f"Added effect to {names[0]}: {value.strip()}")
+            continue
+        raise typer.BadParameter(f"Unknown annotation: {choice}")
+
+
+def _add_userpage_annotations(mode: InputMode, logfile: Path | None) -> None:
+    logfile = _require_option("--csv", logfile)
+    while True:
+        rows = _read_log_rows(logfile)
+        entries = [(index, row) for index, row in enumerate(rows) if row and not _is_log_header_row(row)]
+        entries.reverse()
+        recent = entries[:ANNOTATION_RECENT_COUNT]
+        if not recent:
+            con.print("No logs found.")
+            return
+        choices = [str(index) for index, _ in recent]
+        labels_by_value = {str(index): _history_entry_label(row) for index, row in recent}
+        selected = _select_statistics_choice(mode, USERPAGE_ANNOTATE_CHOICE, choices, labels_by_value)
+        if selected == BACK_CHOICE:
+            return
+        if selected not in labels_by_value:
+            raise typer.BadParameter(f"Unknown log entry: {selected}")
+        _annotate_log_entry(mode, rows[int(selected)])
 
 
 def _edit_userpage(mode: InputMode) -> None:
@@ -5681,7 +5834,7 @@ def log_ingestion(
             )
             return False
         if action == ACTION_USERPAGE:
-            _userpage_menu(mode, userpage)
+            _userpage_menu(mode, userpage, logfile)
             return False
         if action == ACTION_HISTORY:
             _show_history(mode, _require_option("--csv", logfile), webhook, userpage)
