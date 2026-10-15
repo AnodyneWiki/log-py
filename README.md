@@ -23,6 +23,8 @@ logpy looks for a config file at `~/.config/logpy/config.toml` (or `$LOGPY_CONFI
 user = "yourname"
 logfile = "log.csv"
 webhook = "https://discord.com/api/webhooks/..."
+mouse = false # disables mouse interaction in dmenu and bemenu selectors
+notify = true # sends a desktop notification after logging an ingestion
 ```
 
 ## Usage
@@ -31,8 +33,8 @@ Log through "argument" mode:
 
 ```sh
 # usage: logpy <SUBSTANCE> <DOSAGE> <ROA> [TIME...] [OPTIONS] )
-logpy Methamphetamine ~50mg Intravenous --note "reused-syringe reused-needle omg-my-favorite"
-logpy Methamphetamine 50mg Intravenous --site left-cephalic --salt Hydrochloride
+logpy Methamphetamine ~50mg intravenous --note "reused-syringe reused-needle omg-my-favorite"
+logpy Methamphetamine 50mg intravenous --site left-cephalic --salt Hydrochloride
 logpy LSD 100μg sublingual 2 hours ago
 logpy LSD 100μg sublingual -sa tartrate yesterday at 10pm
 logpy MDMA 120mg oral -sa hcl 2025-12-04 10:00
@@ -42,7 +44,7 @@ Log through "flags" mode:
 
 ```sh
 logpy --flags --substance LSD --dosage 100μg --roa sublingual
-logpy --flags --substance Ketamine --dosage 25mg --roa intramuscular --volume 1.5ml
+logpy --flags --substance Ketamine --dosage 25mg --roa intramuscular --volume 1.5ml --syringe-size 3ml --needle-gauge 30g --needle-length 1/2in
 ```
 
 Show total usage for a day from the CSV log:
@@ -51,6 +53,32 @@ Show total usage for a day from the CSV log:
 logpy --daily-usage --csv log.csv
 logpy --daily-usage=23.9.2026 --csv log.csv
 ```
+
+Dosage prompts accept simple arithmetic expressions for numeric amounts, e.g. entering `90 / 2` and unit `mg` logs `45mg`.
+
+Track virtual syringe and needle supply counts:
+
+```sh
+logpy --add-syringes "100x 2.5ml luer-slip nevershare white"
+logpy --add-needle "100x 30G 13mm bd microlance yellow"
+logpy --remove-syringes "10x 2.5ml luer-slip nevershare white"
+logpy --remove-needle "10x 30G 13mm bd microlance yellow"
+logpy --stack
+```
+
+Supply counts are stored in `~/.config/logpy/supplies.json`. Prompt and menu modes select the syringe and needle from this stack for injection routes, with a reuse option for either item when no new stock should be consumed. Reused items still select or enter a syringe or needle type for the log, but they do not need to exist in the stack and do not decrement stack counts. When an injection is logged with selected stack items or matching `--syringe-size`, `--needle-gauge`, and `--needle-length` values, the matching syringe and needle counters are decremented unless the note includes `reused-syringe` or `reused-needle`.
+
+Syringes with `non-disposable` in their supply description are logged normally but do not decrement after use, e.g. `logpy --add-syringe "1x 1ml non-disposable glass luer-lock"`.
+
+Track remaining substance amounts in a stash:
+
+```sh
+logpy --add-stash "500mg Ketamine"
+logpy --remove-stash "25mg Ketamine"
+logpy --stash
+```
+
+Stash amounts are stored in `~/.config/logpy/stash.json`. When an ingestion is logged, the matching stash entry is decremented by the logged dosage amount when the dosage can be parsed as a single numeric amount with a supported unit (`g`, `mg`, `ug`/`mcg`, or `ml`). Mixture rows decrement each matching component independently.
 
 To log several compounds combined in one syringe volume, separate substances, dosages, and optional salts with `;` or `+`; the row is logged with substance names surrounded by `< >` and separated by `/`, and list-valued dosage/salt fields formatted as bracketed comma lists, e.g. `<Ketamine/Midazolam>`, `[25mg,1mg]@1.5ml`. In prompt and selector modes, entering more than one compound logs the row as a mixture automatically.
 
@@ -70,8 +98,8 @@ logpy --dmenu
 # "bemenu" mode
 logpy --bemenu
 
-# "fuzzel" mode
-logpy --fuzzel
+# "fuzzel" mode disabled for now
+# logpy --fuzzel
 ```
 
 ## Flags
@@ -82,22 +110,37 @@ logpy --fuzzel
 | `--prompt` | | prompt for ingestion fields on stdin |
 | `--dmenu` | | prompt for ingestion fields with dmenu selectors |
 | `--bemenu` | | prompt for ingestion fields with bemenu selectors |
-| `--fuzzel` | | prompt for ingestion fields with fuzzel selectors |
+| `--fuzzel` | | disabled for now |
 | `--sync-choices` | | scan the CSV log and refresh menu choices, dosages, salts, and substance abbreviations |
+| `--log-ingestion` | | start prompt/menu mode directly in the ingestion logger |
+| `--stack-menu` | | start prompt/menu mode directly in the interactive supply stack editor |
+| `--stash-menu` | | start prompt/menu mode directly in the interactive stash editor |
 | `--daily-usage` | | sum usage for a day from the CSV log; optional value uses `d.m.y` format and defaults to today |
+| `--add-syringe` / `--add-syringes` | | add syringe stock to the virtual supply cache |
+| `--add-needle` / `--add-needles` | | add needle stock to the virtual supply cache |
+| `--remove-syringe` / `--remove-syringes` | | remove syringe stock from the virtual supply cache |
+| `--remove-needle` / `--remove-needles` | | remove needle stock from the virtual supply cache |
+| `--stack` | | show syringe and needle stock from the virtual supply cache |
+| `--add-stash` | | add substance amount to the stash cache |
+| `--remove-stash` | | remove substance amount from the stash cache |
+| `--stash` | | show substance amounts from the stash cache |
 | `--strict` | | only accept substances found in AnodyneWiki's API |
 | `--substance` | | substance to log |
 | `--dosage` | | dosage and unit |
 | `--roa` | | route of administration |
 | `--offset-time` | | relative ingestion time, e.g. `2 hours ago` |
 | `--set-time` | | ingestion timestamp |
-| `--volume` | | solution volume appended to dosage for injection/rectal routes |
+| `--volume` | | injected/used solution volume appended to dosage for injection/rectal routes |
+| `--syringe-size` | | maximum syringe capacity appended to the note for injection routes |
+| `--needle-gauge` | | needle gauge appended to the note for injection routes |
+| `--needle-length` | | needle length appended to the note for injection routes |
 | `--salt` | `-sa` | salt form |
 | `--site` | `-si` | site of administration |
 | `--note` | `-n` | note, added to the Discord message and CSV |
 | `--csv` | | CSV file to write to |
 | `--user` | `-u` | username |
 | `--webhook` | `-w` | Discord webhook URL |
+| `--notify` | | send a desktop notification after logging an ingestion |
 | `--config` | `-c` | config file path |
 
 ## Ingestion CSV format

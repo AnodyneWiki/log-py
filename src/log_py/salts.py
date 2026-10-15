@@ -71,7 +71,9 @@ SALT_ALIASES = {
     "hemihydrate": [],
 }
 SALT_CHOICES = [
-    "unknown",
+    "Unknown",
+    "Neutral",
+    "Acid",
     "freebase",
     "hydrochloride",
     "sulfate",
