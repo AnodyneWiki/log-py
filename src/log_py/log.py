@@ -3750,6 +3750,8 @@ def _userpage_schema(path: list[object]) -> dict[str, object]:
     "fields" maps a dict's expected keys to "list" or "str"; "item" names the
     shape of new items in a list ("str" or "route")."""
     pattern = tuple("*" if isinstance(key, int) else key for key in path)
+    if pattern == (USERPAGE_SUBSTANCES_KEY,):
+        return {"item": "substance"}
     if pattern == (USERPAGE_SUBSTANCES_KEY, "*"):
         return {"fields": {USERPAGE_ROUTES_KEY: "list", **{field: "list" for field in USERPAGE_SUBSTANCE_LIST_FIELDS}}}
     if pattern == (USERPAGE_SUBSTANCES_KEY, "*", USERPAGE_ROUTES_KEY):
@@ -3799,13 +3801,13 @@ def _edit_json_container(mode: InputMode, root: object, path: list[object]) -> N
             continue
         if selected == USERPAGE_ADD_ITEM_CHOICE:
             item_shape = schema.get("item")
-            if item_shape == "route":
-                name = _prompt_json_text(mode, "Route name", None)
+            if item_shape in ("route", "substance"):
+                name = _prompt_json_text(mode, "Route name" if item_shape == "route" else "Substance name", None)
                 if name is None or not name.strip():
                     continue
                 container.append({JSON_NAME_KEY: name.strip()})
                 _write_userpage_json(root)
-                con.print(f"Added route {name.strip()}.")
+                con.print(f"Added {item_shape} {name.strip()}.")
                 _edit_json_container(mode, root, [*path, len(container) - 1])
                 continue
             text = _prompt_json_text(mode, f"Item {len(container)}", None)
