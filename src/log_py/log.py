@@ -64,6 +64,13 @@ USERPAGE_ADD_ITEM_CHOICE = "Add item"
 USERPAGE_REMOVE_CHOICE = "Remove"
 USERPAGE_CLOSE_CHOICE = "Close"
 JSON_NAME_KEY = "Name"
+JSON_MISSING_PREFIX = "missing:"
+USERPAGE_SUBSTANCES_KEY = "TriedSubstances"
+USERPAGE_ROUTES_KEY = "Routes"
+USERPAGE_ROUTE_FIELDS = ["Name", "Dosage", "Onset", "Comeup", "Duration"]
+USERPAGE_SUBSTANCE_LIST_FIELDS = [
+    "Classes", "Salts", "Sources", "Indication", "Tolerance", "Effects", "After", "Odor", "Notes",
+]
 JSON_ENTRY_PREFIX = "entry:"
 HISTORY_PAGE_SIZE = 100
 HISTORY_NEXT_CHOICE = f"Next {HISTORY_PAGE_SIZE}"
@@ -3667,20 +3674,43 @@ def _json_entry_choices(container: dict | list) -> tuple[list[str], dict[str, st
     return list(labels), labels, keys
 
 
+def _userpage_schema(path: list[object]) -> dict[str, object]:
+    """Known annotation fields for the container at `path` inside userpage.json.
+
+    "fields" maps a dict's expected keys to "list" or "str"; "item" names the
+    shape of new items in a list ("str" or "route")."""
+    pattern = tuple("*" if isinstance(key, int) else key for key in path)
+    if pattern == (USERPAGE_SUBSTANCES_KEY, "*"):
+        return {"fields": {USERPAGE_ROUTES_KEY: "list", **{field: "list" for field in USERPAGE_SUBSTANCE_LIST_FIELDS}}}
+    if pattern == (USERPAGE_SUBSTANCES_KEY, "*", USERPAGE_ROUTES_KEY):
+        return {"item": "route"}
+    if pattern == (USERPAGE_SUBSTANCES_KEY, "*", USERPAGE_ROUTES_KEY, "*"):
+        return {"fields": {field: "str" for field in USERPAGE_ROUTE_FIELDS}}
+    if len(pattern) == 3 and pattern[:2] == (USERPAGE_SUBSTANCES_KEY, "*") and pattern[2] in USERPAGE_SUBSTANCE_LIST_FIELDS:
+        return {"item": "str"}
+    return {}
+
+
 def _edit_json_container(mode: InputMode, root: object, path: list[object]) -> None:
     while True:
         container = _json_container_at(root, path)
         if not isinstance(container, (dict, list)):
             return
         title = " / ".join([ACTION_USERPAGE, *(str(key) for key in path)])
+        schema = _userpage_schema(path)
         entry_ids, labels_by_value, keys = _json_entry_choices(container)
+        missing_fields = []
+        if isinstance(container, dict):
+            missing_fields = [field for field in schema.get("fields", {}) if field not in container]
+            for index, field in enumerate(missing_fields):
+                placeholder = "[]" if schema["fields"][field] == "list" else '""'
+                labels_by_value[f"{JSON_MISSING_PREFIX}{index}"] = f"{field}: {placeholder} (missing)"
         actions = [USERPAGE_ADD_KEY_CHOICE if isinstance(container, dict) else USERPAGE_ADD_ITEM_CHOICE]
         if keys:
             actions.append(USERPAGE_REMOVE_CHOICE)
         labels_by_value.update({action: action for action in actions})
-        selected = _select_statistics_choice(
-            mode, title, [*entry_ids, *actions], labels_by_value, back_choice=USERPAGE_CLOSE_CHOICE
-        )
+        choices = [*entry_ids, *(f"{JSON_MISSING_PREFIX}{index}" for index in range(len(missing_fields))), *actions]
+        selected = _select_statistics_choice(mode, title, choices, labels_by_value, back_choice=USERPAGE_CLOSE_CHOICE)
         if selected == USERPAGE_CLOSE_CHOICE:
             return
         if selected == USERPAGE_ADD_KEY_CHOICE:
@@ -3698,10 +3728,20 @@ def _edit_json_container(mode: InputMode, root: object, path: list[object]) -> N
             con.print(f"Added {key}.")
             continue
         if selected == USERPAGE_ADD_ITEM_CHOICE:
+            item_shape = schema.get("item")
+            if item_shape == "route":
+                name = _prompt_json_text(mode, "Route name", None)
+                if name is None or not name.strip():
+                    continue
+                container.append({JSON_NAME_KEY: name.strip()})
+                _write_userpage_json(root)
+                con.print(f"Added route {name.strip()}.")
+                _edit_json_container(mode, root, [*path, len(container) - 1])
+                continue
             text = _prompt_json_text(mode, f"Item {len(container)}", None)
             if text is None:
                 continue
-            container.append(_parse_json_input(text))
+            container.append(text if item_shape == "str" else _parse_json_input(text))
             _write_userpage_json(root)
             con.print("Added item.")
             continue
@@ -3716,6 +3756,20 @@ def _edit_json_container(mode: InputMode, root: object, path: list[object]) -> N
             _write_userpage_json(root)
             con.print(f"Removed {key}.")
             continue
+        if selected.startswith(JSON_MISSING_PREFIX):
+            field = missing_fields[int(selected[len(JSON_MISSING_PREFIX):])]
+            if schema["fields"][field] == "list":
+                container[field] = []
+                _write_userpage_json(root)
+                _edit_json_container(mode, root, [*path, field])
+                continue
+            text = _prompt_json_text(mode, field, None)
+            if text is None:
+                continue
+            container[field] = text
+            _write_userpage_json(root)
+            con.print(f"Added {field}.")
+            continue
         if selected.startswith(JSON_ENTRY_PREFIX):
             key = keys[int(selected[len(JSON_ENTRY_PREFIX):])]
             value = container[key]
@@ -3725,7 +3779,8 @@ def _edit_json_container(mode: InputMode, root: object, path: list[object]) -> N
             text = _prompt_json_text(mode, str(key), _json_value_text(value))
             if text is None:
                 continue
-            container[key] = _parse_json_input(text)
+            field_shape = schema.get("fields", {}).get(key) if isinstance(container, dict) else schema.get("item")
+            container[key] = text if field_shape == "str" else _parse_json_input(text)
             _write_userpage_json(root)
             con.print(f"Updated {key}.")
             continue
