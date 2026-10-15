@@ -828,9 +828,10 @@ def _format_route_for_log(roa: str | None) -> str | None:
 
 def _choice_label(canonical: str, aliases: dict[str, list[str]]) -> str:
     variants = aliases.get(canonical)
+    display = canonical.capitalize() if aliases is ROA_ALIASES else canonical
     if not variants:
-        return canonical
-    return f"{canonical} ({', '.join(variants)})"
+        return display
+    return f"{display} ({', '.join(variants)})"
 
 
 def _strip_base_menu_choice_marker(choice: str) -> str:
