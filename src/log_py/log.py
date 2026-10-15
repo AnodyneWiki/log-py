@@ -65,6 +65,7 @@ ACTION_USERPAGE = "Userpage"
 USERPAGE_ADD_KEY_CHOICE = "Add key"
 USERPAGE_ADD_ITEM_CHOICE = "Add item"
 USERPAGE_REMOVE_CHOICE = "Remove"
+USERPAGE_MOVE_CHOICE = "Move"
 USERPAGE_CLOSE_CHOICE = "Back"
 USERPAGE_RESET_CHOICE = "Reset userpage to upstream"
 USERPAGE_ANNOTATE_CHOICE = "Add annotations"
@@ -142,6 +143,7 @@ MENU_ICONS = {
     ACTION_USERPAGE: "avatar-default-symbolic",
     USERPAGE_ADD_KEY_CHOICE: "list-add-symbolic",
     USERPAGE_ADD_ITEM_CHOICE: "list-add-symbolic",
+    USERPAGE_MOVE_CHOICE: "go-jump-symbolic",
     USERPAGE_CLOSE_CHOICE: "window-close-symbolic",
     USERPAGE_RESET_CHOICE: "view-refresh-symbolic",
     USERPAGE_ANNOTATE_CHOICE: "list-add-symbolic",
@@ -3811,6 +3813,8 @@ def _edit_json_container(mode: InputMode, root: object, path: list[object]) -> N
         actions = [USERPAGE_ADD_KEY_CHOICE if isinstance(container, dict) else USERPAGE_ADD_ITEM_CHOICE]
         if keys:
             actions.append(USERPAGE_REMOVE_CHOICE)
+        if isinstance(container, list) and len(container) > 1:
+            actions.append(USERPAGE_MOVE_CHOICE)
         labels_by_value.update({action: action for action in actions})
         choices = [*entry_ids, *(f"{JSON_MISSING_PREFIX}{index}" for index in range(len(missing_fields))), *actions]
         selected = _select_statistics_choice(mode, title, choices, labels_by_value, back_choice=USERPAGE_CLOSE_CHOICE)
@@ -3858,6 +3862,33 @@ def _edit_json_container(mode: InputMode, root: object, path: list[object]) -> N
             del container[key]
             _write_userpage_json(root)
             con.print(f"Removed {key}.")
+            continue
+        if selected == USERPAGE_MOVE_CHOICE:
+            target = _select_statistics_choice(
+                mode, f"{title} / {USERPAGE_MOVE_CHOICE}", entry_ids, labels_by_value, back_choice=USERPAGE_CLOSE_CHOICE
+            )
+            if target == USERPAGE_CLOSE_CHOICE or not target.startswith(JSON_ENTRY_PREFIX):
+                continue
+            index = int(target[len(JSON_ENTRY_PREFIX):])
+            positions = [str(number) for number in range(1, len(container) + 1)]
+            position_labels = {
+                str(number): f"{number}: {_json_summary(item)}" + (" (current)" if number == index + 1 else "")
+                for number, item in enumerate(container, 1)
+            }
+            chosen = _select_statistics_choice(
+                mode,
+                f"{title} / Move {_json_summary(container[index])} to position",
+                positions,
+                position_labels,
+                back_choice=USERPAGE_CLOSE_CHOICE,
+            )
+            if chosen == USERPAGE_CLOSE_CHOICE or chosen not in position_labels:
+                continue
+            new_index = int(chosen) - 1
+            if new_index != index:
+                container.insert(new_index, container.pop(index))
+                _write_userpage_json(root)
+                con.print(f"Moved {_json_summary(container[new_index])} to position {new_index + 1}.")
             continue
         if selected.startswith(JSON_MISSING_PREFIX):
             field = missing_fields[int(selected[len(JSON_MISSING_PREFIX):])]
