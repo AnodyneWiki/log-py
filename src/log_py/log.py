@@ -2340,12 +2340,16 @@ def _interactive_choice(
     ) or current
 
 
-def _select_prompt_action(mode: InputMode) -> str:
+def _select_prompt_action(mode: InputMode, include_userpage: bool = True) -> str:
+    actions = [ACTION_LOG_INGESTION, ACTION_EDIT_SUPPLY_STACK, ACTION_EDIT_STASH, ACTION_HISTORY, ACTION_STATISTICS]
+    if include_userpage:
+        actions.append(ACTION_USERPAGE)
+    actions.append(ACTION_SETTINGS)
     return _interactive_choice(
         mode,
         "Action",
         ACTION_LOG_INGESTION,
-        [ACTION_LOG_INGESTION, ACTION_EDIT_SUPPLY_STACK, ACTION_EDIT_STASH, ACTION_HISTORY, ACTION_STATISTICS, ACTION_USERPAGE, ACTION_SETTINGS],
+        actions,
         ACTION_ALIASES,
     )
 
@@ -3871,6 +3875,119 @@ def _edit_userpage(mode: InputMode) -> None:
     if not USERPAGE_CACHE_FILE.exists():
         con.print(f"{USERPAGE_CACHE_FILE} does not exist yet; it is created on the first change.")
     _edit_json_container(mode, root, [])
+
+
+def _parse_dosage_range(text: str | None) -> tuple[Decimal, Decimal, str] | None:
+    """Parse "25-50mg", "~60mg" or "0.5g" into (low, high, unit) in a normalised unit."""
+    if not text:
+        return None
+    match = DOSAGE_AMOUNT_RE.match(_dosage_without_volume(text))
+    if not match:
+        return None
+    try:
+        low = Decimal(match.group("amount"))
+        high = Decimal(match.group("range_amount")) if match.group("range_amount") else low
+    except InvalidOperation:
+        return None
+    normalized_low = _normalize_usage_unit(low, match.group("unit"))
+    normalized_high = _normalize_usage_unit(high, match.group("unit"))
+    if not normalized_low or not normalized_high:
+        return None
+    low, unit = normalized_low
+    high, _ = normalized_high
+    return min(low, high), max(low, high), unit
+
+
+def _format_dosage_range(low: Decimal, high: Decimal, unit: str) -> str:
+    if low == high:
+        return f"{_format_decimal(low)}{unit}"
+    return f"{_format_decimal(low)}-{_format_decimal(high)}{unit}"
+
+
+def _plain_logged_dosage(dosage: str) -> str:
+    return _strip_dosage_guess_marker(_dosage_without_volume(dosage)) or dosage.strip()
+
+
+def _update_userpage_tried_substance(title: str, dosage: str, roa: str) -> None:
+    """Keep the userpage's TriedSubstances in step with a logged ingestion.
+
+    For each logged component: find (or add) its TriedSubstances entry, find
+    (or add, with the logged dosage) the route used, and widen the route's
+    "Dosage" range when the logged dosage falls outside it."""
+    if not USERPAGE_CACHE_FILE.exists():
+        return
+    try:
+        root = _load_userpage_json()
+    except typer.BadParameter as exc:
+        err_con.print(f"Userpage not updated: {exc}", style="bold yellow")
+        return
+    if not isinstance(root, dict):
+        return
+    tried = root.get(USERPAGE_SUBSTANCES_KEY)
+    if tried is None:
+        tried = root[USERPAGE_SUBSTANCES_KEY] = []
+    if not isinstance(tried, list):
+        return
+
+    names = _split_mixture_values(title) or [title]
+    doses = _split_mixture_values(_dosage_without_volume(dosage)) or [dosage]
+    route_name = _format_route_for_log(roa) or roa.strip().casefold()
+    changes = []
+    for name, dose in zip(names, doses):
+        name = (_resolve_alias(name, SUBSTANCE_ALIASES) or name).strip()
+        if not name or _is_skip_choice(name) or _alias_key(name) == _alias_key(UNKNOWN_SUBSTANCE_TITLE):
+            continue
+        plain_dose = _plain_logged_dosage(dose)
+        entry = next(
+            (item for item in tried if isinstance(item, dict) and isinstance(item.get(JSON_NAME_KEY), str)
+             and _alias_key(_resolve_alias(item[JSON_NAME_KEY], SUBSTANCE_ALIASES) or item[JSON_NAME_KEY]) == _alias_key(name)),
+            None,
+        )
+        if entry is None:
+            entry = {JSON_NAME_KEY: name, USERPAGE_ROUTES_KEY: []}
+            tried.append(entry)
+            changes.append(f"added {name}")
+        routes = entry.get(USERPAGE_ROUTES_KEY)
+        if routes is None:
+            routes = entry[USERPAGE_ROUTES_KEY] = []
+        if not isinstance(routes, list):
+            continue
+        route = next(
+            (item for item in routes if isinstance(item, dict) and isinstance(item.get(JSON_NAME_KEY), str)
+             and (_format_route_for_log(item[JSON_NAME_KEY]) or item[JSON_NAME_KEY].strip().casefold()) == route_name),
+            None,
+        )
+        if route is None:
+            routes.append({JSON_NAME_KEY: route_name, "Dosage": plain_dose})
+            changes.append(f"{name}: added route {route_name} ({plain_dose})")
+            continue
+        logged = _parse_dosage_range(dose)
+        if logged is None:
+            continue
+        current = _parse_dosage_range(route.get("Dosage") if isinstance(route.get("Dosage"), str) else None)
+        if current is None:
+            if not route.get("Dosage"):
+                route["Dosage"] = plain_dose
+                changes.append(f"{name} {route_name}: dosage {plain_dose}")
+            continue
+        low, high, unit = current
+        logged_low, logged_high, logged_unit = logged
+        if logged_unit != unit:
+            continue
+        new_low, new_high = min(low, logged_low), max(high, logged_high)
+        if (new_low, new_high) != (low, high):
+            route["Dosage"] = _format_dosage_range(new_low, new_high, unit)
+            changes.append(f"{name} {route_name}: dosage {route['Dosage']}")
+
+    if not changes:
+        return
+    try:
+        _write_userpage_json(root)
+    except OSError as exc:
+        err_con.print(f"Userpage not updated: '{exc}'", style="bold yellow")
+        return
+    for change in changes:
+        con.print(f"Updated userpage: {change}")
 
 
 def _read_log_rows(logfile: Path) -> list[list[str]]:
@@ -5446,10 +5563,10 @@ def log_ingestion(
 
     return_to_menu = False
     if mode != InputMode.flags and not has_supply_operation and not has_stash_operation and not sync_choices and not daily_usage:
-        action = base_prompt_action or _select_prompt_action(mode)
+        action = base_prompt_action or _select_prompt_action(mode, bool(userpage))
         return_to_menu = base_prompt_action is None
         while not handle_menu_action(action):
-            action = _select_prompt_action(mode)
+            action = _select_prompt_action(mode, bool(userpage))
             return_to_menu = True
             started_at = datetime.now(timezone.utc)
 
@@ -5487,9 +5604,9 @@ def log_ingestion(
                 allow_back_to_menu=return_to_menu,
             )
         except IngestionCancelled:
-            action = _select_prompt_action(mode)
+            action = _select_prompt_action(mode, bool(userpage))
             while not handle_menu_action(action):
-                action = _select_prompt_action(mode)
+                action = _select_prompt_action(mode, bool(userpage))
             started_at = datetime.now(timezone.utc)
             continue
         ingestion_time = (
@@ -5520,6 +5637,8 @@ def log_ingestion(
         _add_logged_choice_options(logfile, title, dosage, salt)
         _print_supply_updates("Used supply", _decrement_logged_supplies(note))
         _print_stash_updates("Used stash", _decrement_logged_stash(title, dosage))
+        if userpage:
+            _update_userpage_tried_substance(title, dosage, roa)
 
         logline = _format_logline(
             user, userpage, kind, dosage, substance_md, salt, roa, logged_site, note, time_now, is_backdated
@@ -5538,7 +5657,7 @@ def log_ingestion(
 
         if not return_to_menu:
             return
-        action = _select_prompt_action(mode)
+        action = _select_prompt_action(mode, bool(userpage))
         while not handle_menu_action(action):
-            action = _select_prompt_action(mode)
+            action = _select_prompt_action(mode, bool(userpage))
         started_at = datetime.now(timezone.utc)
