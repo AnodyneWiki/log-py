@@ -37,7 +37,7 @@ SKIP_CHOICE = "Skip"
 LEGACY_UNKNOWN_CHOICE = "Unknown"
 UNKNOWN_SUBSTANCE_TITLE = "Unknown"
 DONE_SUBSTANCE_CHOICE = ">"
-UNKNOWN_SUBSTANCE_CHOICE = SKIP_CHOICE
+UNKNOWN_SUBSTANCE_CHOICE = LEGACY_UNKNOWN_CHOICE
 UNKNOWN_SITE_CHOICE = SKIP_CHOICE
 UNKNOWN_VOLUME_CHOICE = SKIP_CHOICE
 UNKNOWN_GAUGE_CHOICE = SKIP_CHOICE
@@ -106,7 +106,7 @@ SUPPLY_ACTION_ALIASES = {
     SUPPLY_ACTION_SPECIFY_NEW_NEEDLE: ["new needle", "specify needle"],
     SUPPLY_ACTION_REUSE_SYRINGE: ["reuse syringe", "reused syringe", "rs"],
     SUPPLY_ACTION_REUSE_NEEDLE: ["reuse needle", "reused needle", "rn"],
-    SUPPLY_ACTION_SKIP: ["skip requirement", "s"],
+    SUPPLY_ACTION_SKIP: [],
     SUPPLY_ACTION_DONE: ["done", "quit", "exit"],
 }
 EXTRA_INFO_PROMPT = "Extra options? (note, time, dosage by volume)"
