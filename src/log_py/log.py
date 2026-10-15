@@ -61,7 +61,6 @@ SUPPLY_ACTION_SPECIFY_NEW_NEEDLE = "Specify a new needle type"
 SUPPLY_ACTION_REUSE_SYRINGE = "Reuse syringe"
 SUPPLY_ACTION_REUSE_NEEDLE = "Reuse needle"
 SUPPLY_ACTION_SKIP = SKIP_CHOICE
-SUPPLY_ACTION_DONE = "Done"
 SUPPLY_ACTION_BACK = BACK_CHOICE
 NON_DISPOSABLE_SYRINGE_TOKEN = "non-disposable"
 # Populated only from AnodyneWiki API responses cached in SUBSTANCE_CACHE_FILE.
@@ -114,7 +113,6 @@ SUPPLY_ACTION_ALIASES = {
     SUPPLY_ACTION_REUSE_SYRINGE: ["reuse syringe", "reused syringe", "rs"],
     SUPPLY_ACTION_REUSE_NEEDLE: ["reuse needle", "reused needle", "rn"],
     SUPPLY_ACTION_SKIP: [],
-    SUPPLY_ACTION_DONE: ["done", "quit", "exit"],
 }
 EXTRA_INFO_PROMPT = "Extra options? (note, time, dosage by volume)"
 
@@ -2296,12 +2294,12 @@ def _select_stash_item(mode: InputMode) -> dict[str, object] | None:
         _stash_item_id(entry): entry
         for entry in entries
     }
-    choices = [SUPPLY_ACTION_ADD_NEW, *item_by_id, SUPPLY_ACTION_DONE]
+    choices = [SUPPLY_ACTION_ADD_NEW, *item_by_id, SUPPLY_ACTION_BACK]
     labels_by_value = {
         _stash_item_id(entry): _stash_item_label(entry)
         for entry in entries
     }
-    labels_by_value.update({SUPPLY_ACTION_ADD_NEW: SUPPLY_ACTION_ADD_NEW, SUPPLY_ACTION_DONE: SUPPLY_ACTION_DONE})
+    labels_by_value.update({SUPPLY_ACTION_ADD_NEW: SUPPLY_ACTION_ADD_NEW, SUPPLY_ACTION_BACK: SUPPLY_ACTION_BACK})
     if mode == InputMode.prompt:
         labels = [labels_by_value.get(choice, choice) for choice in choices]
         _print_prompt_choices("Stash", labels)
@@ -2310,13 +2308,13 @@ def _select_stash_item(mode: InputMode) -> dict[str, object] | None:
             selected_index = int(value)
         except (TypeError, ValueError):
             selected = _resolve_alias(value, SUPPLY_ACTION_ALIASES) or value
-            for choice, label in zip(choices, labels):
-                if selected == choice or selected == label:
-                    return item_by_id.get(choice)
             if selected == SUPPLY_ACTION_ADD_NEW:
                 return None
-            if selected == SUPPLY_ACTION_DONE:
+            if selected == SUPPLY_ACTION_BACK:
                 raise StopIteration
+            for choice, label in zip(choices, labels):
+                if choice in item_by_id and (selected == choice or selected == label):
+                    return item_by_id[choice]
             raise typer.BadParameter(f"Unknown stash item: {value}")
         if selected_index < 1 or selected_index > len(choices):
             raise typer.BadParameter("Stash selection out of range")
@@ -2330,7 +2328,7 @@ def _select_stash_item(mode: InputMode) -> dict[str, object] | None:
             labels_by_value=labels_by_value,
             aliases=SUPPLY_ACTION_ALIASES,
         )
-    if choice == SUPPLY_ACTION_DONE:
+    if choice == SUPPLY_ACTION_BACK:
         raise StopIteration
     if choice == SUPPLY_ACTION_ADD_NEW:
         return None
@@ -2376,10 +2374,10 @@ def _edit_stash(mode: InputMode) -> None:
             mode,
             _stash_item_label(selected),
             SUPPLY_ACTION_ADD,
-            [SUPPLY_ACTION_ADD, SUPPLY_ACTION_REMOVE, SUPPLY_ACTION_DONE],
+            [SUPPLY_ACTION_ADD, SUPPLY_ACTION_REMOVE, SUPPLY_ACTION_BACK],
             SUPPLY_ACTION_ALIASES,
         )
-        if action == SUPPLY_ACTION_DONE:
+        if action == SUPPLY_ACTION_BACK:
             continue
         if action == SUPPLY_ACTION_ADD:
             amount = _interactive_stash_amount(mode, "Add")
@@ -4443,16 +4441,17 @@ def log_ingestion(
     base_prompt_action = _resolve_base_prompt_action(log_ingestion_action, stack_menu_action, stash_menu_action)
     if base_prompt_action and mode == InputMode.flags:
         raise typer.BadParameter("--log-ingestion, --stack-menu, and --stash-menu require a prompt/menu mode")
-    if mode != InputMode.flags and not has_supply_operation and not has_stash_operation and not sync_choices and not daily_usage:
-        while True:
-            action = base_prompt_action or _select_prompt_action(mode)
-            base_prompt_action = None
-            if action != ACTION_EDIT_SUPPLY_STACK:
-                break
+    def handle_menu_action(action: str) -> bool:
+        """Run a non-ingestion action. Returns True when an ingestion should be logged."""
+        if action == ACTION_EDIT_SUPPLY_STACK:
             _edit_supply_stack(mode)
+            return False
         if action == ACTION_EDIT_STASH:
             _edit_stash(mode)
-            return
+            return False
+        if action == ACTION_STATISTICS:
+            _show_statistics(mode, _require_option("--csv", logfile))
+            return False
         if action == ACTION_SETTINGS:
             _edit_settings(
                 mode,
@@ -4466,12 +4465,19 @@ def log_ingestion(
                     "notify": notify,
                 },
             )
-            return
-        if action == ACTION_STATISTICS:
-            _show_statistics(mode, _require_option("--csv", logfile))
-            return
+            raise typer.Exit(0)
         if action != ACTION_LOG_INGESTION:
             raise typer.BadParameter(f"Unknown action: {action}")
+        return True
+
+    return_to_menu = False
+    if mode != InputMode.flags and not has_supply_operation and not has_stash_operation and not sync_choices and not daily_usage:
+        action = base_prompt_action or _select_prompt_action(mode)
+        return_to_menu = base_prompt_action is None
+        while not handle_menu_action(action):
+            action = _select_prompt_action(mode)
+            return_to_menu = True
+            started_at = datetime.now(timezone.utc)
 
     _merge_cached_substance_aliases()
     if sync_choices:
@@ -4488,75 +4494,83 @@ def log_ingestion(
 
     logfile = _require_option("--csv", logfile)
     user = _require_option("--user", user)
-    kind, substance, dosage, roa, site, salt, note, time = _collect_input(
-        mode,
-        logfile,
-        _coalesce(substance_arg, substance_opt),
-        _coalesce(dosage_arg, dosage_opt),
-        _coalesce(roa_arg, roa_opt),
-        site,
-        salt,
-        note,
-        _coalesce(" ".join(time_arg) if time_arg else None, set_time),
-        volume_opt,
-        needle_gauge_opt,
-        needle_length_opt,
-        syringe_size_opt,
-    )
-    ingestion_time = (
-        _menu_default_ingestion_time(mode, time, offset_time, started_at)
-        or _parse_ingestion_time(time, offset_time)
-    )
-    time_now = ingestion_time.isoformat(timespec='milliseconds')
-    is_backdated = datetime.now(timezone.utc) - ingestion_time > timedelta(minutes=10)
-    title = substance_md = substance
-
-    if not logfile.exists():
-        logfile.parent.mkdir(parents=True, exist_ok=True)
-        logfile.touch()
-        con.print(f"File '{logfile}' has been created.")
-
-    if mode == InputMode.prompt:
-        accept_mode = "confirm"
-    elif strict_mode == False:
-        accept_mode = "always"
-    else:
-        accept_mode = "strict"
-    title, substance_md = _lookup_substance_title(kind, substance, accept=accept_mode )
-    logged_site = _logged_site(site)
-
-    with open(logfile, "a", newline="") as of:
-        log = csv.writer(of)
-        log.writerow([time_now, user, title, dosage, roa, logged_site, salt, note])
-    _add_logged_choice_options(logfile, title, dosage, salt)
-    _print_supply_updates("Used supply", _decrement_logged_supplies(note))
-    _print_stash_updates("Used stash", _decrement_logged_stash(title, dosage))
-
-    user_md = f"[{user}]({userpage})" if userpage else user
-    if kind == LogKind.mixture:
-        logline = f"{user_md}: {dosage} {substance_md}" + (
-            f" {salt.replace('<','[').replace('>',']')}" if salt else ""
+    while True:
+        kind, substance, dosage, roa, site, salt, note, time = _collect_input(
+            mode,
+            logfile,
+            _coalesce(substance_arg, substance_opt),
+            _coalesce(dosage_arg, dosage_opt),
+            _coalesce(roa_arg, roa_opt),
+            site,
+            salt,
+            note,
+            _coalesce(" ".join(time_arg) if time_arg else None, set_time),
+            volume_opt,
+            needle_gauge_opt,
+            needle_length_opt,
+            syringe_size_opt,
         )
-    else:
-        logline = f"{user_md}: {dosage} {substance_md}" + (
-            f" [{salt}]" if salt else ""
+        ingestion_time = (
+            _menu_default_ingestion_time(mode, time, offset_time, started_at)
+            or _parse_ingestion_time(time, offset_time)
         )
-    webhook_site = _format_webhook_site(roa, logged_site)
-    logline += f" via {roa}" + (
-        f" at {webhook_site} site" if webhook_site else ""
-    ) + (
-        f"\n> {note}" if note else ""
-    ) + (
-        f"\n> {time_now}" if is_backdated else ""
-    )
+        time_now = ingestion_time.isoformat(timespec='milliseconds')
+        is_backdated = datetime.now(timezone.utc) - ingestion_time > timedelta(minutes=10)
+        title = substance_md = substance
 
-    if notify:
-        _send_notification(logline)
+        if not logfile.exists():
+            logfile.parent.mkdir(parents=True, exist_ok=True)
+            logfile.touch()
+            con.print(f"File '{logfile}' has been created.")
 
-    if webhook:
-        try:
-            p = requests.post(webhook.encoded_string(), json={ "content": logline, "flags": 4})
-            p.raise_for_status()
-            con.print(f"Status: {p.status_code}")
-        except Exception as e:
-            err_con.print(f"Webhook failed: '{e}'", style="bold yellow")
+        if mode == InputMode.prompt:
+            accept_mode = "confirm"
+        elif strict_mode == False:
+            accept_mode = "always"
+        else:
+            accept_mode = "strict"
+        title, substance_md = _lookup_substance_title(kind, substance, accept=accept_mode )
+        logged_site = _logged_site(site)
+
+        with open(logfile, "a", newline="") as of:
+            log = csv.writer(of)
+            log.writerow([time_now, user, title, dosage, roa, logged_site, salt, note])
+        _add_logged_choice_options(logfile, title, dosage, salt)
+        _print_supply_updates("Used supply", _decrement_logged_supplies(note))
+        _print_stash_updates("Used stash", _decrement_logged_stash(title, dosage))
+
+        user_md = f"[{user}]({userpage})" if userpage else user
+        if kind == LogKind.mixture:
+            logline = f"{user_md}: {dosage} {substance_md}" + (
+                f" {salt.replace('<','[').replace('>',']')}" if salt else ""
+            )
+        else:
+            logline = f"{user_md}: {dosage} {substance_md}" + (
+                f" [{salt}]" if salt else ""
+            )
+        webhook_site = _format_webhook_site(roa, logged_site)
+        logline += f" via {roa}" + (
+            f" at {webhook_site} site" if webhook_site else ""
+        ) + (
+            f"\n> {note}" if note else ""
+        ) + (
+            f"\n> {time_now}" if is_backdated else ""
+        )
+
+        if notify:
+            _send_notification(logline)
+
+        if webhook:
+            try:
+                p = requests.post(webhook.encoded_string(), json={ "content": logline, "flags": 4})
+                p.raise_for_status()
+                con.print(f"Status: {p.status_code}")
+            except Exception as e:
+                err_con.print(f"Webhook failed: '{e}'", style="bold yellow")
+
+        if not return_to_menu:
+            return
+        action = _select_prompt_action(mode)
+        while not handle_menu_action(action):
+            action = _select_prompt_action(mode)
+        started_at = datetime.now(timezone.utc)
