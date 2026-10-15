@@ -3928,9 +3928,9 @@ def _collect_input(
                     "Volume",
                     volume,
                     candidates=[
+                        UNKNOWN_VOLUME_CHOICE,
                         *([volume] if volume else []),
                         *_read_logged_volumes(logfile),
-                        UNKNOWN_VOLUME_CHOICE,
                     ],
                     allow_back=True,
                 )
