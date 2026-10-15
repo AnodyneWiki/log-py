@@ -36,6 +36,8 @@ SUPPLY_CACHE_VERSION = 1
 STASH_CACHE_FILE = app_dir / "stash.json"
 STASH_CACHE_VERSION = 1
 WEBHOOK_MESSAGE_CACHE_FILE = app_dir / "webhook-messages.json"
+USERPAGE_CACHE_FILE = app_dir / "userpage.json"
+ANODYNE_USERPAGE_RE = re.compile(r"^(?P<base>https?://anodyne\.wiki)/user/(?P<name>[^/?#]+)/?(?:[?#].*)?$")
 WEBHOOK_MESSAGE_CACHE_VERSION = 1
 SKIP_CHOICE = "Skip"
 LEGACY_UNKNOWN_CHOICE = "Unknown"
@@ -361,6 +363,43 @@ def _fetch_substance_entry_result(substance: str) -> tuple[dict[str, object] | N
         "Abbreviation": _unique_aliases(title, _normalize_api_abbreviations(data.get("Abbreviation"))),
         "synced_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }, False
+
+
+def _anodyne_userpage_api_url(userpage: str | None) -> str | None:
+    """Map an AnodyneWiki user page URL to its API URL, else None."""
+    if not userpage:
+        return None
+    match = ANODYNE_USERPAGE_RE.match(userpage.strip())
+    if not match:
+        return None
+    return f"{match.group('base')}/api/user/{match.group('name')}"
+
+
+def _ensure_userpage_cache(userpage: str | None) -> None:
+    """Download the AnodyneWiki user API document to userpage.json once."""
+    if USERPAGE_CACHE_FILE.exists():
+        return
+    api_url = _anodyne_userpage_api_url(userpage)
+    if not api_url:
+        return
+    try:
+        response = requests.get(api_url, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+    except Exception as exc:
+        err_con.print(f"Userpage download failed: '{exc}'", style="bold yellow")
+        return
+    try:
+        USERPAGE_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmpfile = USERPAGE_CACHE_FILE.with_suffix(f"{USERPAGE_CACHE_FILE.suffix}.tmp")
+        with open(tmpfile, "w") as outfile:
+            json.dump(data, outfile, indent=2)
+            outfile.write("\n")
+        tmpfile.replace(USERPAGE_CACHE_FILE)
+    except OSError as exc:
+        err_con.print(f"Could not write {USERPAGE_CACHE_FILE}: '{exc}'", style="bold yellow")
+        return
+    con.print(f"Saved userpage to {USERPAGE_CACHE_FILE}.")
 
 
 def _fetch_substance_entry(substance: str) -> dict[str, object] | None:
@@ -4938,6 +4977,7 @@ def log_ingestion(
 
     MENU_MOUSE_ENABLED = mouse
     MENU_ICON_COLOR = menu_icon_color.strip()
+    _ensure_userpage_cache(userpage)
     if fuzzel_mode and menu_tool is not None:
         raise typer.BadParameter("Choose only one input mode")
     MENU_TOOL_COMMAND = _parse_menu_tool(FUZZEL_MENU_TOOL if fuzzel_mode else menu_tool)

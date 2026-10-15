@@ -27,6 +27,8 @@ mouse = false # disables mouse interaction in dmenu and bemenu selectors
 notify = true # sends a desktop notification after logging an ingestion
 ```
 
+When `userpage` points at an AnodyneWiki user page such as `https://anodyne.wiki/user/0xea` and `~/.config/logpy/userpage.json` does not exist yet, logpy downloads `https://anodyne.wiki/api/user/0xea` to that file on its next run. A failed download prints a warning and does not block logging.
+
 ## Usage
 
 Log through "argument" mode:
