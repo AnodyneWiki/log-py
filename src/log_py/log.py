@@ -50,7 +50,7 @@ UNKNOWN_GAUGE_CHOICE = SKIP_CHOICE
 UNKNOWN_LENGTH_CHOICE = SKIP_CHOICE
 EMPTY_NOTE_CHOICE = "No note"
 NOW_TIME_CHOICE = "now"
-BACK_CHOICE = "<"
+BACK_CHOICE = "Back"
 MENU_CUSTOM_PREFIX = "~"
 ACTION_LOG_INGESTION = "Add ingestion"
 ACTION_EDIT_SUPPLY_STACK = "Supplies"
@@ -63,7 +63,7 @@ USERPAGE_ADD_KEY_CHOICE = "Add key"
 USERPAGE_ADD_ITEM_CHOICE = "Add item"
 USERPAGE_REMOVE_CHOICE = "Remove"
 USERPAGE_CLOSE_CHOICE = "Close"
-USERPAGE_RESET_CHOICE = "Reset userpage to anodyne api output"
+USERPAGE_RESET_CHOICE = "Reset userpage to upstream"
 USERPAGE_ANNOTATE_CHOICE = "Add annotations"
 USERPAGE_MANUAL_CHOICE = "Manually edit userpage"
 JSON_NAME_KEY = "Name"
@@ -3810,7 +3810,7 @@ def _userpage_menu(mode: InputMode, userpage: str | None) -> None:
         choice = _select_statistics_choice(
             mode,
             ACTION_USERPAGE,
-            [USERPAGE_RESET_CHOICE, USERPAGE_ANNOTATE_CHOICE, USERPAGE_MANUAL_CHOICE],
+            [USERPAGE_ANNOTATE_CHOICE, USERPAGE_MANUAL_CHOICE, USERPAGE_RESET_CHOICE, ],
         )
         if choice == BACK_CHOICE:
             return
