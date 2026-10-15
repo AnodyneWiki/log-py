@@ -177,6 +177,7 @@ MENU_ICONS = {
 STATISTICS_TIMESCALE_DAILY = "Daily"
 STATISTICS_TIMESCALE_WEEKLY = "Weekly"
 STATISTICS_TIMESCALE_MONTHLY = "Monthly"
+STATISTICS_TIMESCALE_YEARLY = "Yearly"
 STATISTICS_TIMESCALE_TOTAL = "Total"
 STATISTICS_SECTION_SUBSTANCES = "Substances"
 STATISTICS_SECTION_ROUTES = "Routes of Administration"
@@ -3273,6 +3274,8 @@ def _stats_period_key(row_date: date, timescale: str) -> str:
         return f"{year}-W{week:02d}"
     if timescale == STATISTICS_TIMESCALE_MONTHLY:
         return f"{row_date.year}-{row_date.month:02d}"
+    if timescale == STATISTICS_TIMESCALE_YEARLY:
+        return str(row_date.year)
     return STATISTICS_TIMESCALE_TOTAL
 
 
@@ -3286,6 +3289,8 @@ def _stats_period_sort_key(period_key: str, timescale: str) -> tuple[int, ...]:
     if timescale == STATISTICS_TIMESCALE_MONTHLY:
         year, month = period_key.split("-", 1)
         return (int(year), int(month))
+    if timescale == STATISTICS_TIMESCALE_YEARLY:
+        return (int(period_key),)
     return (0,)
 
 
@@ -3332,8 +3337,10 @@ def _collect_statistics(logfile: Path, timescale: str) -> dict[str, dict[str, ob
 
             route = _format_route_for_log(row[4]) or row[4].strip().casefold()
             routes = period["routes"]
+            route_entry = None
             if isinstance(routes, dict) and route:
-                routes[route] = int(routes.get(route, 0)) + 1
+                route_entry = routes.setdefault(route, {"ingestions": 0, "amounts": {}})
+                route_entry["ingestions"] = int(route_entry["ingestions"]) + 1
 
             dosage_value = _dosage_without_volume(row[3]) if len(row) > 3 else ""
             dosages = _split_mixture_values(dosage_value)
@@ -3353,6 +3360,9 @@ def _collect_statistics(logfile: Path, timescale: str) -> dict[str, dict[str, ob
                 amounts = entry["amounts"]
                 if isinstance(amounts, dict):
                     amounts[unit] = amounts.get(unit, Decimal("0")) + amount
+                if route_entry is not None and isinstance(route_entry.get("amounts"), dict):
+                    route_amounts = route_entry["amounts"]
+                    route_amounts[unit] = route_amounts.get(unit, Decimal("0")) + amount
     return periods
 
 
@@ -3380,14 +3390,37 @@ def _statistics_substance_lines(period: dict[str, object]) -> list[str]:
     return [row[2] for row in sorted(rows, key=lambda row: (-row[0], row[1].casefold()))]
 
 
+def _format_total_amount_mg(amounts: dict[str, Decimal]) -> str:
+    """Total weight in milligrams (g and ug converted), other units listed as is."""
+    parts = []
+    milligrams = Decimal("0")
+    for unit, amount in amounts.items():
+        if unit == "mg":
+            milligrams += amount
+        elif unit == "ug":
+            milligrams += amount / Decimal("1000")
+        elif unit == "g":
+            milligrams += amount * Decimal("1000")
+        else:
+            parts.append(f"{_format_decimal(amount)}{unit}")
+    if milligrams:
+        parts.insert(0, f"{_format_decimal(milligrams)}mg")
+    return ", ".join(parts) if parts else "unknown"
+
+
 def _statistics_route_lines(period: dict[str, object]) -> list[str]:
     routes = period.get("routes")
     if not isinstance(routes, dict):
         return []
-    rows = [
-        (int(count), route, f"{route} ({int(count)})")
-        for route, count in routes.items()
-    ]
+    rows = []
+    for route, value in routes.items():
+        if isinstance(value, dict):
+            ingestions = int(value.get("ingestions", 0))
+            amounts = value.get("amounts")
+            total = _format_total_amount_mg(amounts if isinstance(amounts, dict) else {})
+        else:
+            ingestions, total = int(value), "unknown"
+        rows.append((ingestions, route, f"{route} (total: {total}, ingestions: {ingestions})"))
     return [row[2] for row in sorted(rows, key=lambda row: (-row[0], row[1].casefold()))]
 
 
@@ -3451,6 +3484,7 @@ def _show_statistics(mode: InputMode, logfile: Path) -> None:
                 STATISTICS_TIMESCALE_DAILY,
                 STATISTICS_TIMESCALE_WEEKLY,
                 STATISTICS_TIMESCALE_MONTHLY,
+                STATISTICS_TIMESCALE_YEARLY,
                 STATISTICS_TIMESCALE_TOTAL,
             ],
         )
@@ -3461,9 +3495,13 @@ def _show_statistics(mode: InputMode, logfile: Path) -> None:
         if not period_keys:
             con.print("No statistics found.")
             continue
-        period_key = _select_statistics_choice(mode, timescale, period_keys, period_labels)
-        if period_key == BACK_CHOICE:
-            continue
+        if timescale == STATISTICS_TIMESCALE_TOTAL:
+            # A single all-time period: go straight to the sections.
+            period_key = period_keys[0]
+        else:
+            period_key = _select_statistics_choice(mode, timescale, period_keys, period_labels)
+            if period_key == BACK_CHOICE:
+                continue
         section = _select_statistics_choice(
             mode,
             period_labels.get(period_key, period_key),
