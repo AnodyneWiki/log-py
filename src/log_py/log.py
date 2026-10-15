@@ -2,6 +2,7 @@ import csv
 import ast
 import dateparser
 import io
+import functools
 import json
 import os
 import re
@@ -362,6 +363,7 @@ def _merge_cached_substance_aliases(cache: dict[str, dict[str, object]] | None =
             title,
             [*existing_aliases, *_cached_abbreviations(entry)],
         )
+    _invalidate_alias_lookups()
 
 
 def _normalize_api_abbreviations(value) -> list[str]:
@@ -613,13 +615,15 @@ def _add_logged_choice_options(
 
 def _sync_choices_from_history(logfile: Path) -> tuple[list[str], dict[str, list[str]], list[str]]:
     _merge_cached_substance_aliases()
+    con.print(f"Scanning {logfile}...")
     substances, _, _ = _sync_choice_cache_from_history(logfile)
 
     cache = _load_substance_cache()
     changed = False
-    for substance in substances:
-        if substance in cache or _is_list_value(substance):
-            continue
+    pending = [substance for substance in substances if substance not in cache and not _is_list_value(substance)]
+    con.print(f"Found {len(substances)} substances; looking up {len(pending)} on AnodyneWiki...")
+    for index, substance in enumerate(pending, 1):
+        con.print(f"[{index}/{len(pending)}] {substance}")
         entry = _fetch_substance_entry(substance)
         if not entry:
             continue
@@ -774,6 +778,7 @@ def _coalesce(*values: str | None) -> str | None:
     return None
 
 
+@functools.lru_cache(maxsize=200_000)
 def _alias_key(value: str) -> str:
     stripped = value.strip()
     key = "".join(char for char in stripped.casefold() if char.isalnum())
@@ -790,12 +795,29 @@ def _supply_key_part(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")
 
 
+# Alias lookup tables are rebuilt only when their alias dict changes. Entries
+# keep a reference to the dict so its id cannot be reused while cached.
+_ALIAS_LOOKUP_CACHE: dict[int, tuple[dict[str, list[str]], dict[str, str]]] = {}
+
+
+def _invalidate_alias_lookups() -> None:
+    _ALIAS_LOOKUP_CACHE.clear()
+
+
 def _alias_lookup(aliases: dict[str, list[str]]) -> dict[str, str]:
+    if not aliases:
+        return {}
+    cached = _ALIAS_LOOKUP_CACHE.get(id(aliases))
+    if cached is not None and cached[0] is aliases:
+        return cached[1]
     lookup = {}
     for canonical, variants in aliases.items():
         lookup[_alias_key(canonical)] = canonical
         for variant in variants:
             lookup[_alias_key(variant)] = canonical
+    if len(_ALIAS_LOOKUP_CACHE) > 64:
+        _ALIAS_LOOKUP_CACHE.clear()
+    _ALIAS_LOOKUP_CACHE[id(aliases)] = (aliases, lookup)
     return lookup
 
 
@@ -4039,13 +4061,18 @@ def _format_list_item(value: str) -> str:
     return buffer.getvalue()
 
 
+@functools.lru_cache(maxsize=1)
+def _known_salt_keys() -> frozenset[str]:
+    keys = {_alias_key(choice) for choice in SALT_CHOICES}
+    keys.update(_alias_key(choice) for choice in SALT_ALIASES)
+    return frozenset(keys)
+
+
 def _is_known_salt_choice(salt: str) -> bool:
     resolved = _resolve_alias(salt, SALT_ALIASES)
     if not resolved:
         return False
-    known_keys = {_alias_key(choice) for choice in SALT_CHOICES}
-    known_keys.update(_alias_key(choice) for choice in SALT_ALIASES)
-    return _alias_key(resolved) in known_keys
+    return _alias_key(resolved) in _known_salt_keys()
 
 
 def _format_salt_for_log(salt: str | None) -> str | None:
@@ -4379,9 +4406,21 @@ def _scan_logged_choices(logfile: Path) -> tuple[list[str], dict[str, list[str]]
     if not logfile.exists():
         return [], {}, []
 
-    substances = []
-    dosages: dict[str, list[str]] = {}
-    salts = []
+    # Recency-ordered, de-duplicated collections kept as dicts keyed by alias
+    # key: a repeated value is moved to the end, and the dicts are reversed at
+    # the end so the most recent entry comes first. This is linear in the
+    # number of rows, unlike re-scanning lists for every row.
+    def touch(recent: dict[str, str], value: str) -> None:
+        value = value.strip()
+        if not value:
+            return
+        key = _alias_key(value)
+        recent.pop(key, None)
+        recent[key] = value
+
+    substances: dict[str, str] = {}
+    dosages: dict[str, dict[str, str]] = {}
+    salts: dict[str, str] = {}
     with open(logfile, newline="") as infile:
         for row in csv.reader(infile):
             if len(row) <= 3 or row[2].strip().lower() in ("substance", "med"):
@@ -4395,17 +4434,20 @@ def _scan_logged_choices(logfile: Path) -> tuple[list[str], dict[str, list[str]]
             row_salts = _split_mixture_values(row[6] if len(row) > 6 else None)
 
             for row_substance in row_substances:
-                _append_recent_unique(substances, row_substance, SUBSTANCE_ALIASES)
+                touch(substances, row_substance)
 
             for row_substance, row_dosage in zip(row_substances, row_dosages):
-                substance_dosages = dosages.setdefault(row_substance, [])
-                _append_recent_unique(substance_dosages, row_dosage)
+                touch(dosages.setdefault(row_substance.strip(), {}), row_dosage)
 
             for row_salt in row_salts:
                 if not _is_known_salt_choice(row_salt):
-                    _append_recent_unique(salts, row_salt)
+                    touch(salts, row_salt)
 
-    return substances, dosages, salts
+    return (
+        list(reversed(substances.values())),
+        {substance: list(reversed(recent.values())) for substance, recent in dosages.items()},
+        list(reversed(salts.values())),
+    )
 
 def _sync_choice_cache_from_history(logfile: Path) -> tuple[list[str], dict[str, list[str]], list[str]]:
     substances, dosages, salts = _scan_logged_choices(logfile)
