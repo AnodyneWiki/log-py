@@ -57,6 +57,7 @@ SUPPLY_ACTION_SPECIFY_NEW_SYRINGE = "Specify a new syringe type"
 SUPPLY_ACTION_SPECIFY_NEW_NEEDLE = "Specify a new needle type"
 SUPPLY_ACTION_REUSE_SYRINGE = "Reuse syringe"
 SUPPLY_ACTION_REUSE_NEEDLE = "Reuse needle"
+SUPPLY_ACTION_SKIP = "Skip requirement"
 SUPPLY_ACTION_DONE = "Done"
 NON_DISPOSABLE_SYRINGE_TOKEN = "non-disposable"
 # Populated only from AnodyneWiki API responses cached in SUBSTANCE_CACHE_FILE.
@@ -102,6 +103,7 @@ SUPPLY_ACTION_ALIASES = {
     SUPPLY_ACTION_SPECIFY_NEW_NEEDLE: ["new needle", "specify needle"],
     SUPPLY_ACTION_REUSE_SYRINGE: ["reuse syringe", "reused syringe", "rs"],
     SUPPLY_ACTION_REUSE_NEEDLE: ["reuse needle", "reused needle", "rn"],
+    SUPPLY_ACTION_SKIP: ["skip requirement", "skip", "none", "s"],
     SUPPLY_ACTION_DONE: ["done", "quit", "exit"],
 }
 EXTRA_INFO_PROMPT = "Extra options? (note, time, dosage by volume)"
@@ -1463,11 +1465,11 @@ def _select_reused_supply_entry(mode: InputMode, label: str, kind: str) -> dict[
     return _parse_reused_supply_entry(kind, description)
 
 
-def _prompt_for_supply_entry(label: str, kind: str) -> dict[str, object]:
+def _prompt_for_supply_entry(label: str, kind: str) -> dict[str, object] | None:
     entries = _available_supply_entries(kind)
     reuse_action = _supply_reuse_action(label)
     con.print(f"{label}s:")
-    labels = [*[_supply_entry_label(entry) for entry in entries], reuse_action]
+    labels = [*[_supply_entry_label(entry) for entry in entries], reuse_action, SUPPLY_ACTION_SKIP]
     for index, choice_label in enumerate(labels, 1):
         con.print(f"{index}. {choice_label}")
     selected = _prompt_for_value(label, "1", optional=False)
@@ -1477,19 +1479,23 @@ def _prompt_for_supply_entry(label: str, kind: str) -> dict[str, object]:
         selected_action = _resolve_alias(selected, SUPPLY_ACTION_ALIASES) or selected
         if selected_action == reuse_action:
             return _select_reused_supply_entry(InputMode.prompt, label, kind)
+        if selected_action == SUPPLY_ACTION_SKIP:
+            return None
         raise typer.BadParameter(f"{label} selection must be a number") from exc
     if selected_index < 1 or selected_index > len(labels):
         raise typer.BadParameter(f"{label} selection out of range")
-    if selected_index == len(labels):
+    if labels[selected_index - 1] == SUPPLY_ACTION_SKIP:
+        return None
+    if labels[selected_index - 1] == reuse_action:
         return _select_reused_supply_entry(InputMode.prompt, label, kind)
     return entries[selected_index - 1]
 
 
-def _menu_for_supply_entry(executable: str, label: str, kind: str, allow_back: bool = False) -> dict[str, object]:
+def _menu_for_supply_entry(executable: str, label: str, kind: str, allow_back: bool = False) -> dict[str, object] | None:
     entries = _available_supply_entries(kind)
     reuse_action = _supply_reuse_action(label)
     labels = [_supply_entry_label(entry) for entry in entries]
-    choices = [*labels, reuse_action]
+    choices = [*labels, reuse_action, SUPPLY_ACTION_SKIP]
     selected_label = _menu_for_value(
         executable,
         label,
@@ -1499,6 +1505,8 @@ def _menu_for_supply_entry(executable: str, label: str, kind: str, allow_back: b
         allow_back=allow_back,
     )
     selected_action = _resolve_alias(selected_label or "", SUPPLY_ACTION_ALIASES) or selected_label
+    if selected_action == SUPPLY_ACTION_SKIP:
+        return None
     if selected_action == reuse_action:
         return _select_reused_supply_entry(InputMode(executable), label, kind)
     for entry_label, entry in zip(labels, entries):
