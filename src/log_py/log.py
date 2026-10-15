@@ -3155,23 +3155,15 @@ def _is_log_header_row(row: list[str]) -> bool:
     return bool(row) and row[0].strip().lower() == "timestamp"
 
 
-def _refresh_log_choices_fingerprint(logfile: Path) -> None:
-    """Keep the cached menu choices valid after an in-place log edit, so the
-    whole history is not rescanned (or re-synced) on the next prompt."""
-    cache = _load_prompt_options_cache()
-    entry = cache.get(_logfile_cache_key(logfile))
-    if not isinstance(entry, dict):
-        return
-    entry["fingerprint"] = _logfile_fingerprint(logfile)
-    _write_prompt_options_cache(cache)
-
-
 def _write_log_rows(logfile: Path, rows: list[list[str]]) -> None:
     tmpfile = logfile.with_suffix(f"{logfile.suffix}.tmp")
     with open(tmpfile, "w", newline="") as outfile:
         csv.writer(outfile).writerows(rows)
     tmpfile.replace(logfile)
-    _refresh_log_choices_fingerprint(logfile)
+    # Rebuild the cached menu choices from the remaining rows (a local read of
+    # the CSV, no substance lookups), so choices that no longer appear in any
+    # row are dropped right away.
+    _sync_choice_cache_from_history(logfile)
 
 
 def _padded_log_row(row: list[str]) -> list[str]:
