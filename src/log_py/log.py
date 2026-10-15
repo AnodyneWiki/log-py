@@ -38,6 +38,8 @@ STASH_CACHE_FILE = app_dir / "stash.json"
 STASH_CACHE_VERSION = 1
 WEBHOOK_MESSAGE_CACHE_FILE = app_dir / "webhook-messages.json"
 USERPAGE_CACHE_FILE = app_dir / "userpage.json"
+USERSYNC_URL_TEMPLATE = "https://anodyne.wiki/api/usersync/{name}"
+USERSYNC_CREDENTIALS: tuple[str, str] | None = None
 ANODYNE_USERPAGE_RE = re.compile(r"^(?P<base>https?://anodyne\.wiki)/user/(?P<name>[^/?#]+)/?(?:[?#].*)?$")
 WEBHOOK_MESSAGE_CACHE_VERSION = 1
 SKIP_CHOICE = "Skip"
@@ -287,6 +289,8 @@ class LogConfig(BaseModel):
     userpage: str | None = None
     logfile: Path | None = None
     webhook: HttpUrl | None = None
+    nusersync: str | None = None
+    pusersync: str | None = None
     mouse: bool = True
     notify: bool = False
 
@@ -3670,6 +3674,32 @@ def _load_userpage_json() -> object:
         raise typer.BadParameter(f"Could not read {USERPAGE_CACHE_FILE}: {exc}") from exc
 
 
+def _upload_userpage() -> None:
+    """PUT userpage.json to the AnodyneWiki usersync endpoint when the
+    nusersync/pusersync credentials are configured."""
+    if not USERSYNC_CREDENTIALS:
+        return
+    name, password = USERSYNC_CREDENTIALS
+    try:
+        payload = USERPAGE_CACHE_FILE.read_bytes()
+    except OSError as exc:
+        err_con.print(f"Userpage upload skipped: '{exc}'", style="bold yellow")
+        return
+    try:
+        response = requests.put(
+            USERSYNC_URL_TEMPLATE.format(name=name),
+            auth=(name, password),
+            headers={"Content-Type": "application/json"},
+            data=payload,
+            timeout=10,
+        )
+        response.raise_for_status()
+    except Exception as exc:
+        err_con.print(f"Userpage upload failed: '{exc}'", style="bold yellow")
+        return
+    con.print(f"Uploaded userpage ({response.status_code}).")
+
+
 def _write_userpage_json(data: object) -> None:
     USERPAGE_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
     tmpfile = USERPAGE_CACHE_FILE.with_suffix(f"{USERPAGE_CACHE_FILE.suffix}.tmp")
@@ -3677,6 +3707,7 @@ def _write_userpage_json(data: object) -> None:
         json.dump(data, outfile, indent=2, ensure_ascii=False)
         outfile.write("\n")
     tmpfile.replace(USERPAGE_CACHE_FILE)
+    _upload_userpage()
 
 
 def _json_summary(value: object) -> str:
@@ -5437,6 +5468,16 @@ def log_ingestion(
         help="discord webhook url",
         rich_help_panel="Configuration Options"
     )] = None,
+    nusersync: Annotated[str | None, typer.Option(
+        "--nusersync",
+        help="AnodyneWiki usersync user name; with --pusersync, userpage.json is uploaded after every local change",
+        rich_help_panel="Configuration Options",
+    )] = None,
+    pusersync: Annotated[str | None, typer.Option(
+        "--pusersync",
+        help="AnodyneWiki usersync password",
+        rich_help_panel="Configuration Options",
+    )] = None,
     mouse: Annotated[bool, typer.Option(
         "--mouse/--no-mouse",
         help="enable mouse interaction in dmenu and bemenu selectors",
@@ -5458,9 +5499,10 @@ def log_ingestion(
         is_eager=True,
     )] = None
 ):
-    global MENU_MOUSE_ENABLED, MENU_TOOL_COMMAND, MENU_ICON_COLOR
+    global MENU_MOUSE_ENABLED, MENU_TOOL_COMMAND, MENU_ICON_COLOR, USERSYNC_CREDENTIALS
 
     MENU_MOUSE_ENABLED = mouse
+    USERSYNC_CREDENTIALS = (nusersync, pusersync) if nusersync and pusersync else None
     MENU_ICON_COLOR = menu_icon_color.strip()
     _ensure_userpage_cache(userpage)
     if fuzzel_mode and menu_tool is not None:
@@ -5558,6 +5600,8 @@ def log_ingestion(
                     "userpage": userpage,
                     "logfile": logfile,
                     "webhook": webhook,
+                    "nusersync": nusersync,
+                    "pusersync": pusersync,
                     "mouse": mouse,
                     "notify": notify,
                 },
