@@ -58,6 +58,11 @@ ACTION_EDIT_STASH = "Stash"
 ACTION_SETTINGS = "Settings"
 ACTION_STATISTICS = "Statistics"
 ACTION_HISTORY = "History"
+ACTION_USERPAGE = "Userpage"
+USERPAGE_ADD_KEY_CHOICE = "Add key"
+USERPAGE_ADD_ITEM_CHOICE = "Add item"
+USERPAGE_REMOVE_CHOICE = "Remove"
+JSON_ENTRY_PREFIX = "entry:"
 HISTORY_PAGE_SIZE = 100
 HISTORY_NEXT_CHOICE = f"Next {HISTORY_PAGE_SIZE}"
 HISTORY_EDIT_CHOICE = "Edit"
@@ -108,6 +113,7 @@ ACTION_ALIASES = {
     ACTION_SETTINGS: ["settings", "config", "preferences"],
     ACTION_STATISTICS: ["statistics", "stats"],
     ACTION_HISTORY: ["history", "logs"],
+    ACTION_USERPAGE: ["userpage", "profile"],
 }
 
 # Icon names attached to menu choices in fuzzel mode. They are freedesktop icon
@@ -117,6 +123,9 @@ MENU_ICONS = {
     ACTION_EDIT_SUPPLY_STACK: "applications-science-symbolic",
     ACTION_EDIT_STASH: "package-x-generic-symbolic",
     ACTION_HISTORY: "document-open-recent-symbolic",
+    ACTION_USERPAGE: "avatar-default-symbolic",
+    USERPAGE_ADD_KEY_CHOICE: "list-add-symbolic",
+    USERPAGE_ADD_ITEM_CHOICE: "list-add-symbolic",
     ACTION_STATISTICS: "x-office-spreadsheet-symbolic",
     ACTION_SETTINGS: "emblem-system-symbolic",
     BACK_CHOICE: "go-previous-symbolic",
@@ -2270,7 +2279,7 @@ def _select_prompt_action(mode: InputMode) -> str:
         mode,
         "Action",
         ACTION_LOG_INGESTION,
-        [ACTION_LOG_INGESTION, ACTION_EDIT_SUPPLY_STACK, ACTION_EDIT_STASH, ACTION_HISTORY, ACTION_STATISTICS, ACTION_SETTINGS],
+        [ACTION_LOG_INGESTION, ACTION_EDIT_SUPPLY_STACK, ACTION_EDIT_STASH, ACTION_HISTORY, ACTION_STATISTICS, ACTION_USERPAGE, ACTION_SETTINGS],
         ACTION_ALIASES,
     )
 
@@ -3579,6 +3588,146 @@ def _update_history_webhook_message(logfile: Path, row: list[str], webhook: Http
         con.print("Updated webhook message.")
     except Exception as exc:
         err_con.print(f"Webhook edit failed: '{exc}'", style="bold yellow")
+
+
+def _load_userpage_json() -> object:
+    if not USERPAGE_CACHE_FILE.exists():
+        return {}
+    try:
+        return json.loads(USERPAGE_CACHE_FILE.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise typer.BadParameter(f"Could not read {USERPAGE_CACHE_FILE}: {exc}") from exc
+
+
+def _write_userpage_json(data: object) -> None:
+    USERPAGE_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmpfile = USERPAGE_CACHE_FILE.with_suffix(f"{USERPAGE_CACHE_FILE.suffix}.tmp")
+    with open(tmpfile, "w") as outfile:
+        json.dump(data, outfile, indent=2, ensure_ascii=False)
+        outfile.write("\n")
+    tmpfile.replace(USERPAGE_CACHE_FILE)
+
+
+def _json_summary(value: object) -> str:
+    if isinstance(value, dict):
+        return f"{{{len(value)} keys}}"
+    if isinstance(value, list):
+        return f"[{len(value)} items]"
+    text = json.dumps(value, ensure_ascii=False)
+    return text if len(text) <= 60 else f"{text[:57]}..."
+
+
+def _json_value_text(value: object) -> str:
+    """Current value as shown for editing: strings raw, everything else as JSON."""
+    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+
+
+def _parse_json_input(text: str) -> object:
+    """Typed input is JSON when it parses (3, true, null, "x", [..], {..}); otherwise a string."""
+    try:
+        return json.loads(text.strip())
+    except ValueError:
+        return text
+
+
+def _prompt_json_text(mode: InputMode, label: str, current: str | None) -> str | None:
+    if mode == InputMode.prompt:
+        return _prompt_for_value(label, current, optional=True)
+    return _menu_for_value(
+        mode.value,
+        label,
+        current,
+        candidates=[current] if current else [],
+        optional=True,
+        keep_custom_prefix=True,
+    )
+
+
+def _json_container_at(root: object, path: list[object]) -> object:
+    node = root
+    for key in path:
+        node = node[key]
+    return node
+
+
+def _json_entry_choices(container: dict | list) -> tuple[list[str], dict[str, str], list[object]]:
+    if isinstance(container, dict):
+        keys: list[object] = list(container.keys())
+        labels = {f"{JSON_ENTRY_PREFIX}{index}": f"{key}: {_json_summary(container[key])}" for index, key in enumerate(keys)}
+    else:
+        keys = list(range(len(container)))
+        labels = {f"{JSON_ENTRY_PREFIX}{index}": f"{index}: {_json_summary(item)}" for index, item in enumerate(container)}
+    return list(labels), labels, keys
+
+
+def _edit_json_container(mode: InputMode, root: object, path: list[object]) -> None:
+    while True:
+        container = _json_container_at(root, path)
+        if not isinstance(container, (dict, list)):
+            return
+        title = " / ".join([ACTION_USERPAGE, *(str(key) for key in path)])
+        entry_ids, labels_by_value, keys = _json_entry_choices(container)
+        actions = [USERPAGE_ADD_KEY_CHOICE if isinstance(container, dict) else USERPAGE_ADD_ITEM_CHOICE]
+        if keys:
+            actions.append(USERPAGE_REMOVE_CHOICE)
+        labels_by_value.update({action: action for action in actions})
+        selected = _select_statistics_choice(mode, title, [*entry_ids, *actions], labels_by_value)
+        if selected == BACK_CHOICE:
+            return
+        if selected == USERPAGE_ADD_KEY_CHOICE:
+            key = (_prompt_json_text(mode, "Key", None) or "").strip()
+            if not key:
+                continue
+            if key in container:
+                err_con.print(f"Key '{key}' already exists", style="bold yellow")
+                continue
+            text = _prompt_json_text(mode, key, None)
+            if text is None:
+                continue
+            container[key] = _parse_json_input(text)
+            _write_userpage_json(root)
+            con.print(f"Added {key}.")
+            continue
+        if selected == USERPAGE_ADD_ITEM_CHOICE:
+            text = _prompt_json_text(mode, f"Item {len(container)}", None)
+            if text is None:
+                continue
+            container.append(_parse_json_input(text))
+            _write_userpage_json(root)
+            con.print("Added item.")
+            continue
+        if selected == USERPAGE_REMOVE_CHOICE:
+            target = _select_statistics_choice(mode, f"{title} / {USERPAGE_REMOVE_CHOICE}", entry_ids, labels_by_value)
+            if target == BACK_CHOICE or not target.startswith(JSON_ENTRY_PREFIX):
+                continue
+            key = keys[int(target[len(JSON_ENTRY_PREFIX):])]
+            del container[key]
+            _write_userpage_json(root)
+            con.print(f"Removed {key}.")
+            continue
+        if selected.startswith(JSON_ENTRY_PREFIX):
+            key = keys[int(selected[len(JSON_ENTRY_PREFIX):])]
+            value = container[key]
+            if isinstance(value, (dict, list)):
+                _edit_json_container(mode, root, [*path, key])
+                continue
+            text = _prompt_json_text(mode, str(key), _json_value_text(value))
+            if text is None:
+                continue
+            container[key] = _parse_json_input(text)
+            _write_userpage_json(root)
+            con.print(f"Updated {key}.")
+            continue
+        raise typer.BadParameter(f"Unknown userpage choice: {selected}")
+
+
+def _edit_userpage(mode: InputMode) -> None:
+    root = _load_userpage_json()
+    if not isinstance(root, (dict, list)):
+        raise typer.BadParameter(f"{USERPAGE_CACHE_FILE} does not hold a JSON object or array")
+    if not USERPAGE_CACHE_FILE.exists():
+        con.print(f"{USERPAGE_CACHE_FILE} does not exist yet; it is created on the first change.")
+    _edit_json_container(mode, root, [])
 
 
 def _read_log_rows(logfile: Path) -> list[list[str]]:
@@ -5077,6 +5226,9 @@ def log_ingestion(
                     "notify": notify,
                 },
             )
+            return False
+        if action == ACTION_USERPAGE:
+            _edit_userpage(mode)
             return False
         if action == ACTION_HISTORY:
             _show_history(mode, _require_option("--csv", logfile), webhook, userpage)
