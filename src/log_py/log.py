@@ -838,16 +838,22 @@ def _parse_menu_tool(value: str | None) -> list[str]:
         raise typer.BadParameter(f"Could not parse --menu-tool command: {exc}") from exc
 
 
+def _menu_tool_is_fuzzel() -> bool:
+    return bool(MENU_TOOL_COMMAND) and Path(MENU_TOOL_COMMAND[0]).name == "fuzzel"
+
+
 def _menu_tool_command(label: str) -> list[str]:
     """Build the custom menu command. "{prompt}" in any argument is replaced by
     the prompt text; without it, "-p <prompt>" is appended as dmenu expects."""
+    if _menu_tool_is_fuzzel():
+        label = f"{label}: "
     if any(MENU_PROMPT_PLACEHOLDER in part for part in MENU_TOOL_COMMAND):
         return [part.replace(MENU_PROMPT_PLACEHOLDER, label) for part in MENU_TOOL_COMMAND]
     return [*MENU_TOOL_COMMAND, "-p", label]
 
 
 def _menu_icons_enabled() -> bool:
-    return bool(MENU_TOOL_COMMAND) and Path(MENU_TOOL_COMMAND[0]).name == "fuzzel"
+    return _menu_tool_is_fuzzel()
 
 
 def _fuzzel_icon_theme() -> str:
