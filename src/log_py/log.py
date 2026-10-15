@@ -2,7 +2,6 @@ import csv
 import ast
 import dateparser
 import io
-import importlib.resources
 import json
 import re
 import shlex
@@ -108,9 +107,8 @@ ACTION_ALIASES = {
     ACTION_HISTORY: ["history", "logs"],
 }
 
-# Icons attached to menu choices in fuzzel mode. The SVG files ship inside the
-# package (src/log_py/icons, copied from Adwaita's symbolic set), so they do
-# not depend on the icon theme installed on the system.
+# Icon names attached to menu choices in fuzzel mode. They are freedesktop icon
+# names, resolved by fuzzel through its configured icon theme.
 MENU_ICONS = {
     ACTION_LOG_INGESTION: "list-add-symbolic",
     ACTION_EDIT_SUPPLY_STACK: "applications-science-symbolic",
@@ -214,7 +212,6 @@ MENU_MOUSE_ENABLED = True
 MENU_TOOL_COMMAND: list[str] = []
 MENU_PROMPT_PLACEHOLDER = "{prompt}"
 FUZZEL_MENU_TOOL = "fuzzel --dmenu"
-MENU_ICON_PACKAGE_DIR = "icons"
 
 
 class BackRequested(Exception):
@@ -848,21 +845,11 @@ def _menu_icons_enabled() -> bool:
     return bool(MENU_TOOL_COMMAND) and Path(MENU_TOOL_COMMAND[0]).name == "fuzzel"
 
 
-def _menu_icon_path(icon_name: str) -> str:
-    bundled = importlib.resources.files(__package__ or "log_py") / MENU_ICON_PACKAGE_DIR / f"{icon_name}.svg"
-    try:
-        if bundled.is_file():
-            return str(bundled)
-    except (OSError, TypeError):
-        pass
-    return icon_name
-
-
 def _menu_entry_with_icon(label: str, value: str | None) -> str:
     icon_name = MENU_ICONS.get(value or "") or MENU_ICONS.get(label)
     if not icon_name:
         return label
-    return f"{label}\0icon\x1f{_menu_icon_path(icon_name)}"
+    return f"{label}\0icon\x1f{icon_name}"
 
 
 def _menu_for_value(

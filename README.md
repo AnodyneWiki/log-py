@@ -98,7 +98,7 @@ logpy --dmenu
 # "bemenu" mode
 logpy --bemenu
 
-# "fuzzel" mode (same as --menu-tool "fuzzel --dmenu", with icons on the choices; the icons ship with logpy)
+# "fuzzel" mode (same as --menu-tool "fuzzel --dmenu", with icons from fuzzel's icon theme on the choices)
 logpy --fuzzel
 
 # custom menu mode with any dmenu-style command
