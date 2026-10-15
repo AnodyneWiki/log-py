@@ -62,6 +62,7 @@ SUPPLY_ACTION_REUSE_SYRINGE = "Reuse syringe"
 SUPPLY_ACTION_REUSE_NEEDLE = "Reuse needle"
 SUPPLY_ACTION_SKIP = SKIP_CHOICE
 SUPPLY_ACTION_DONE = "Done"
+SUPPLY_ACTION_BACK = BACK_CHOICE
 NON_DISPOSABLE_SYRINGE_TOKEN = "non-disposable"
 # Populated only from AnodyneWiki API responses cached in SUBSTANCE_CACHE_FILE.
 SUBSTANCE_ALIASES: dict[str, list[str]] = {}
@@ -2062,12 +2063,12 @@ def _select_stack_item(mode: InputMode) -> tuple[str, dict[str, object]] | None:
         _supply_stack_item_id(kind, entry): (kind, entry)
         for kind, entry in entries
     }
-    choices = [SUPPLY_ACTION_ADD_NEW, *item_by_id, SUPPLY_ACTION_DONE]
+    choices = [SUPPLY_ACTION_ADD_NEW, *item_by_id, SUPPLY_ACTION_BACK]
     labels_by_value = {
         _supply_stack_item_id(kind, entry): _supply_stack_item_label(kind, entry)
         for kind, entry in entries
     }
-    labels_by_value.update({SUPPLY_ACTION_ADD_NEW: SUPPLY_ACTION_ADD_NEW, SUPPLY_ACTION_DONE: SUPPLY_ACTION_DONE})
+    labels_by_value.update({SUPPLY_ACTION_ADD_NEW: SUPPLY_ACTION_ADD_NEW, SUPPLY_ACTION_BACK: SUPPLY_ACTION_BACK})
     if mode == InputMode.prompt:
         labels = [labels_by_value.get(choice, choice) for choice in choices]
         _print_prompt_choices("Stack", labels)
@@ -2076,13 +2077,13 @@ def _select_stack_item(mode: InputMode) -> tuple[str, dict[str, object]] | None:
             selected_index = int(value)
         except (TypeError, ValueError):
             selected = _resolve_alias(value, SUPPLY_ACTION_ALIASES) or value
-            for choice, label in zip(choices, labels):
-                if selected == choice or selected == label:
-                    return item_by_id.get(choice)
             if selected == SUPPLY_ACTION_ADD_NEW:
                 return None
-            if selected == SUPPLY_ACTION_DONE:
+            if selected == SUPPLY_ACTION_BACK:
                 raise StopIteration
+            for choice, label in zip(choices, labels):
+                if choice in item_by_id and (selected == choice or selected == label):
+                    return item_by_id[choice]
             raise typer.BadParameter(f"Unknown stack item: {value}")
         if selected_index < 1 or selected_index > len(choices):
             raise typer.BadParameter("Stack selection out of range")
@@ -2096,7 +2097,7 @@ def _select_stack_item(mode: InputMode) -> tuple[str, dict[str, object]] | None:
             labels_by_value=labels_by_value,
             aliases=SUPPLY_ACTION_ALIASES,
         )
-    if choice == SUPPLY_ACTION_DONE:
+    if choice == SUPPLY_ACTION_BACK:
         raise StopIteration
     if choice == SUPPLY_ACTION_ADD_NEW:
         return None
@@ -2226,10 +2227,10 @@ def _add_new_supply_stack_entry(mode: InputMode) -> None:
         mode,
         SUPPLY_ACTION_ADD_NEW,
         SUPPLY_ACTION_ADD_SYRINGE,
-        [SUPPLY_ACTION_ADD_SYRINGE, SUPPLY_ACTION_ADD_NEEDLE, SUPPLY_ACTION_DONE],
+        [SUPPLY_ACTION_ADD_SYRINGE, SUPPLY_ACTION_ADD_NEEDLE, SUPPLY_ACTION_BACK],
         SUPPLY_ACTION_ALIASES,
     )
-    if action == SUPPLY_ACTION_DONE:
+    if action == SUPPLY_ACTION_BACK:
         return
     if action == SUPPLY_ACTION_ADD_SYRINGE:
         description = _select_supply_type(mode, "syringes")
@@ -2258,10 +2259,10 @@ def _edit_supply_stack(mode: InputMode) -> None:
             mode,
             _supply_stack_item_label(kind, entry),
             SUPPLY_ACTION_ADD,
-            [SUPPLY_ACTION_ADD, SUPPLY_ACTION_REMOVE, SUPPLY_ACTION_DONE],
+            [SUPPLY_ACTION_ADD, SUPPLY_ACTION_REMOVE, SUPPLY_ACTION_BACK],
             SUPPLY_ACTION_ALIASES,
         )
-        if action == SUPPLY_ACTION_DONE:
+        if action == SUPPLY_ACTION_BACK:
             continue
         if action == SUPPLY_ACTION_ADD:
             amount = _interactive_quantity(mode, "Add", [1, 5, 10, 50, 100])
@@ -4443,10 +4444,12 @@ def log_ingestion(
     if base_prompt_action and mode == InputMode.flags:
         raise typer.BadParameter("--log-ingestion, --stack-menu, and --stash-menu require a prompt/menu mode")
     if mode != InputMode.flags and not has_supply_operation and not has_stash_operation and not sync_choices and not daily_usage:
-        action = base_prompt_action or _select_prompt_action(mode)
-        if action == ACTION_EDIT_SUPPLY_STACK:
+        while True:
+            action = base_prompt_action or _select_prompt_action(mode)
+            base_prompt_action = None
+            if action != ACTION_EDIT_SUPPLY_STACK:
+                break
             _edit_supply_stack(mode)
-            return
         if action == ACTION_EDIT_STASH:
             _edit_stash(mode)
             return
