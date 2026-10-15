@@ -3,6 +3,7 @@ import ast
 import dateparser
 import io
 import json
+import os
 import re
 import shlex
 import shutil
@@ -212,6 +213,10 @@ MENU_MOUSE_ENABLED = True
 MENU_TOOL_COMMAND: list[str] = []
 MENU_PROMPT_PLACEHOLDER = "{prompt}"
 FUZZEL_MENU_TOOL = "fuzzel --dmenu"
+MENU_ICON_COLOR = "#ffffff"
+MENU_ICON_CACHE_DIR = app_dir / "icons"
+MENU_ICON_FALLBACK_THEMES = ("Adwaita", "hicolor")
+ICON_COLOR_RE = re.compile(r'((?:fill|stroke|stop-color|color)\s*[:=]\s*["\']?)(#[0-9a-fA-F]{3,8}|currentColor)\b')
 
 
 class BackRequested(Exception):
@@ -845,11 +850,139 @@ def _menu_icons_enabled() -> bool:
     return bool(MENU_TOOL_COMMAND) and Path(MENU_TOOL_COMMAND[0]).name == "fuzzel"
 
 
+def _fuzzel_icon_theme() -> str:
+    """The icon theme fuzzel will use: --icon-theme on its command line, else the
+    icon-theme key of its fuzzel.ini, else fuzzel's default (hicolor)."""
+    args = MENU_TOOL_COMMAND
+    config_path = None
+    for index, arg in enumerate(args):
+        if arg.startswith("--icon-theme="):
+            return arg.split("=", 1)[1]
+        if arg in ("--icon-theme", "-I") and index + 1 < len(args):
+            return args[index + 1]
+        if arg.startswith("--config="):
+            config_path = arg.split("=", 1)[1]
+        if arg in ("--config", "-c") and index + 1 < len(args):
+            config_path = args[index + 1]
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    config_file = Path(config_path).expanduser() if config_path else config_home / "fuzzel" / "fuzzel.ini"
+    try:
+        text = config_file.read_text()
+    except OSError:
+        return "hicolor"
+    section = "main"
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith(("#", ";")):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip().lower()
+            continue
+        if section == "main" and "=" in line:
+            key, value = (part.strip() for part in line.split("=", 1))
+            if key == "icon-theme" and value:
+                return value
+    return "hicolor"
+
+
+def _icon_base_dirs() -> list[Path]:
+    data_home = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+    data_dirs = os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share"
+    candidates = [
+        Path.home() / ".icons",
+        data_home / "icons",
+        *[Path(directory) / "icons" for directory in data_dirs.split(":") if directory],
+        Path("/run/current-system/sw/share/icons"),
+    ]
+    unique = []
+    for candidate in candidates:
+        if candidate not in unique:
+            unique.append(candidate)
+    return unique
+
+
+def _theme_inherits(theme_dirs: list[Path]) -> list[str]:
+    for theme_dir in theme_dirs:
+        try:
+            text = (theme_dir / "index.theme").read_text()
+        except OSError:
+            continue
+        for line in text.splitlines():
+            if line.strip().startswith("Inherits="):
+                return [name.strip() for name in line.split("=", 1)[1].split(",") if name.strip()]
+    return []
+
+
+_THEME_ICON_INDEX: dict[Path, dict[str, Path]] = {}
+
+
+def _theme_dir_icons(theme_dir: Path) -> dict[str, Path]:
+    index = _THEME_ICON_INDEX.get(theme_dir)
+    if index is None:
+        index = {}
+        for path in sorted(theme_dir.rglob("*.svg")):
+            parts = path.relative_to(theme_dir).parts
+            rank = (0 if "symbolic" in parts else 1, 0 if "scalable" in parts else 1, len(parts))
+            current = index.get(path.stem)
+            if current is None or rank < current[0]:
+                index[path.stem] = (rank, path)
+        index = {stem: path for stem, (_, path) in index.items()}
+        _THEME_ICON_INDEX[theme_dir] = index
+    return index
+
+
+def _find_theme_icon(theme: str, icon_name: str) -> Path | None:
+    base_dirs = _icon_base_dirs()
+    queue = [theme]
+    visited = set()
+    while queue:
+        current = queue.pop(0)
+        if current in visited:
+            continue
+        visited.add(current)
+        theme_dirs = [base / current for base in base_dirs if (base / current).is_dir()]
+        for theme_dir in theme_dirs:
+            found = _theme_dir_icons(theme_dir).get(icon_name)
+            if found:
+                return found
+        queue.extend(_theme_inherits(theme_dirs))
+        if not queue:
+            queue.extend(name for name in MENU_ICON_FALLBACK_THEMES if name not in visited)
+    return None
+
+
+def _recolored_icon(icon_name: str) -> str:
+    """Return a path to a copy of the theme's icon filled with MENU_ICON_COLOR,
+    or the bare icon name when no theme file is found."""
+    if not MENU_ICON_COLOR:
+        return icon_name
+    theme = _fuzzel_icon_theme()
+    cache_file = MENU_ICON_CACHE_DIR / _supply_key_part(MENU_ICON_COLOR) / _supply_key_part(theme) / f"{icon_name}.svg"
+    if cache_file.is_file():
+        return str(cache_file)
+    source = _find_theme_icon(theme, icon_name)
+    if source is None:
+        return icon_name
+    try:
+        text = source.read_text()
+    except OSError:
+        return icon_name
+    recolored = ICON_COLOR_RE.sub(lambda match: f"{match.group(1)}{MENU_ICON_COLOR}", text)
+    if recolored == text:
+        recolored = re.sub(r"<svg\b", f'<svg fill="{MENU_ICON_COLOR}"', text, count=1)
+    try:
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(recolored)
+    except OSError:
+        return icon_name
+    return str(cache_file)
+
+
 def _menu_entry_with_icon(label: str, value: str | None) -> str:
     icon_name = MENU_ICONS.get(value or "") or MENU_ICONS.get(label)
     if not icon_name:
         return label
-    return f"{label}\0icon\x1f{icon_name}"
+    return f"{label}\0icon\x1f{_recolored_icon(icon_name)}"
 
 
 def _menu_for_value(
@@ -4667,6 +4800,15 @@ def log_ingestion(
         ),
         rich_help_panel="Input Mode",
     )] = None,
+    menu_icon_color: Annotated[str, typer.Option(
+        "--menu-icon-color",
+        help=(
+            "colour for the icons shown in fuzzel mode; the icons of fuzzel's icon theme are "
+            "copied to the logpy cache with this fill colour. Pass an empty string to use the "
+            "theme's icons unchanged"
+        ),
+        rich_help_panel="Input Mode",
+    )] = MENU_ICON_COLOR,
     fuzzel_mode: Annotated[bool, typer.Option(
         "--fuzzel", "-mf",
         help=f"prompt for ingestion fields with fuzzel selectors (same as --menu-tool '{FUZZEL_MENU_TOOL}')",
@@ -4786,9 +4928,10 @@ def log_ingestion(
         is_eager=True,
     )] = None
 ):
-    global MENU_MOUSE_ENABLED, MENU_TOOL_COMMAND
+    global MENU_MOUSE_ENABLED, MENU_TOOL_COMMAND, MENU_ICON_COLOR
 
     MENU_MOUSE_ENABLED = mouse
+    MENU_ICON_COLOR = menu_icon_color.strip()
     if fuzzel_mode and menu_tool is not None:
         raise typer.BadParameter("Choose only one input mode")
     MENU_TOOL_COMMAND = _parse_menu_tool(FUZZEL_MENU_TOOL if fuzzel_mode else menu_tool)

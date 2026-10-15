@@ -99,12 +99,15 @@ logpy --dmenu
 logpy --bemenu
 
 # "fuzzel" mode (same as --menu-tool "fuzzel --dmenu", with icons from fuzzel's icon theme on the choices)
+logpy --fuzzel --menu-icon-color "#ffffff"   # default colour; pass "" to use the theme icons unchanged
 logpy --fuzzel
 
 # custom menu mode with any dmenu-style command
 logpy --menu-tool "rofi -dmenu"
 logpy --menu-tool "fuzzel --dmenu --prompt={prompt}"
 ```
+
+In fuzzel mode the choices carry icons from fuzzel's configured icon theme (`--icon-theme` on its command line, else `icon-theme` in `fuzzel.ini`, else hicolor). Because symbolic theme icons have a fixed dark fill, logpy copies each icon to `~/.config/logpy/icons/` with the fill replaced by `--menu-icon-color`, white by default, and hands fuzzel that copy. Pass an empty colour to use the theme icons as they are.
 
 `--menu-tool` runs the given command for every selection, feeding the choices on stdin and reading the chosen line from stdout. `{prompt}` anywhere in the command is replaced by the prompt text; without it, `-p <prompt>` is appended, which dmenu, bemenu, rofi, and wofi understand.
 
