@@ -4,6 +4,7 @@ import dateparser
 import io
 import json
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -175,6 +176,8 @@ IV_SITE_WIKIPEDIA_ARTICLES = {
 MENU_WIDTH_FACTOR = "0.75"
 DAILY_USAGE_TODAY = "today"
 MENU_MOUSE_ENABLED = True
+MENU_TOOL_COMMAND: list[str] = []
+MENU_PROMPT_PLACEHOLDER = "{prompt}"
 
 
 class BackRequested(Exception):
@@ -197,6 +200,7 @@ class InputMode(str, Enum):
     prompt = "prompt"
     dmenu = "dmenu"
     bemenu = "bemenu"
+    menu = "menu"
     # fuzzel = "fuzzel"
 
 
@@ -644,7 +648,7 @@ def _parse_ingestion_time(set_time: str | None, offset_time: str | None) -> date
 
 
 def _menu_default_ingestion_time(mode: InputMode, time: str | None, offset_time: str | None, started_at: datetime) -> datetime | None:
-    if mode in (InputMode.dmenu, InputMode.bemenu) and not time and not offset_time:
+    if mode in (InputMode.dmenu, InputMode.bemenu, InputMode.menu) and not time and not offset_time:
         return started_at
     return None
 
@@ -759,6 +763,7 @@ def _resolve_input_mode(
     dmenu: bool,
     bemenu: bool,
     fuzzel: bool,
+    menu: bool = False,
 ) -> InputMode:
     selected = [
         mode
@@ -767,6 +772,7 @@ def _resolve_input_mode(
             (prompt, InputMode.prompt),
             (dmenu, InputMode.dmenu),
             (bemenu, InputMode.bemenu),
+            (menu, InputMode.menu),
             # (fuzzel, InputMode.fuzzel),
         )
         if enabled
@@ -786,6 +792,23 @@ def _prompt_for_value(label: str, current: str | None = None, optional: bool = F
     raise typer.BadParameter(f"{label} is required")
 
 
+def _parse_menu_tool(value: str | None) -> list[str]:
+    if not value or not value.strip():
+        return []
+    try:
+        return shlex.split(value)
+    except ValueError as exc:
+        raise typer.BadParameter(f"Could not parse --menu-tool command: {exc}") from exc
+
+
+def _menu_tool_command(label: str) -> list[str]:
+    """Build the custom menu command. "{prompt}" in any argument is replaced by
+    the prompt text; without it, "-p <prompt>" is appended as dmenu expects."""
+    if any(MENU_PROMPT_PLACEHOLDER in part for part in MENU_TOOL_COMMAND):
+        return [part.replace(MENU_PROMPT_PLACEHOLDER, label) for part in MENU_TOOL_COMMAND]
+    return [*MENU_TOOL_COMMAND, "-p", label]
+
+
 def _menu_for_value(
     executable: str,
     label: str,
@@ -797,8 +820,14 @@ def _menu_for_value(
     allow_back: bool = False,
     keep_custom_prefix: bool = False,
 ) -> str | None:
-    if not shutil.which(executable):
-        raise typer.BadParameter(f"{executable} was not found in PATH")
+    if executable == InputMode.menu.value:
+        if not MENU_TOOL_COMMAND:
+            raise typer.BadParameter("--menu-tool must name the menu command")
+        executable_name = MENU_TOOL_COMMAND[0]
+    else:
+        executable_name = executable
+    if not shutil.which(executable_name):
+        raise typer.BadParameter(f"{executable_name} was not found in PATH")
 
     menu_candidates = candidates or ([current] if current else [])
     if allow_back:
@@ -807,7 +836,10 @@ def _menu_for_value(
     menu_input = "\n".join(labels)
     if menu_input:
         menu_input += "\n"
-    command = [executable, "-p", label]
+    if executable == InputMode.menu.value:
+        command = _menu_tool_command(label)
+    else:
+        command = [executable, "-p", label]
     if executable in (InputMode.dmenu.value, InputMode.bemenu.value):
         command.extend(["-i", "-W", MENU_WIDTH_FACTOR])
         if not MENU_MOUSE_ENABLED:
@@ -4590,6 +4622,15 @@ def log_ingestion(
         help="prompt for ingestion fields with bemenu selectors",
         rich_help_panel="Input Mode",
     )] = False,
+    menu_tool: Annotated[str | None, typer.Option(
+        "--menu-tool", "-mt",
+        help=(
+            "prompt for ingestion fields with a custom dmenu-style command, e.g. 'rofi -dmenu' "
+            "or 'fuzzel --dmenu --prompt={prompt}'; '{prompt}' is replaced by the prompt text, "
+            "otherwise '-p <prompt>' is appended"
+        ),
+        rich_help_panel="Input Mode",
+    )] = None,
     # fuzzel_mode: Annotated[bool, typer.Option(
     #     "--fuzzel",
     #     help="prompt for ingestion fields with fuzzel selectors",
@@ -4709,9 +4750,12 @@ def log_ingestion(
         is_eager=True,
     )] = None
 ):
-    global MENU_MOUSE_ENABLED
+    global MENU_MOUSE_ENABLED, MENU_TOOL_COMMAND
 
     MENU_MOUSE_ENABLED = mouse
+    MENU_TOOL_COMMAND = _parse_menu_tool(menu_tool)
+    if menu_tool is not None and not MENU_TOOL_COMMAND:
+        raise typer.BadParameter("--menu-tool must name the menu command")
     started_at = datetime.now(timezone.utc)
     has_ingestion_input = any(
         (
@@ -4731,6 +4775,7 @@ def log_ingestion(
             prompt_mode,
             dmenu_mode,
             bemenu_mode,
+            menu_tool,
             # fuzzel_mode,
             flags_mode,
             log_ingestion_action,
@@ -4777,7 +4822,7 @@ def log_ingestion(
         _print_daily_usage(logfile, daily_usage)
         return
 
-    mode = _resolve_input_mode(flags_mode, prompt_mode, dmenu_mode, bemenu_mode, False)
+    mode = _resolve_input_mode(flags_mode, prompt_mode, dmenu_mode, bemenu_mode, False, bool(MENU_TOOL_COMMAND))
     base_prompt_action = _resolve_base_prompt_action(log_ingestion_action, stack_menu_action, stash_menu_action)
     if base_prompt_action and mode == InputMode.flags:
         raise typer.BadParameter("--log-ingestion, --stack-menu, and --stash-menu require a prompt/menu mode")
