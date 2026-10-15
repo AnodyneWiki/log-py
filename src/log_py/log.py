@@ -3705,15 +3705,19 @@ def _parse_json_input(text: str) -> object:
 
 
 def _prompt_json_text(mode: InputMode, label: str, current: str | None) -> str | None:
+    """Ask for a JSON value. In menu modes the current value is shown in the
+    prompt title rather than offered as an entry, so the typed text is always
+    returned as typed (a fuzzy matcher such as fuzzel would otherwise select
+    the current value for input like "60mg" over "60-150mg"). An empty input
+    cancels."""
     if mode == InputMode.prompt:
         return _prompt_for_value(label, current, optional=True)
     return _menu_for_value(
         mode.value,
-        label,
-        current,
-        candidates=[current] if current else [],
+        f"{label} [{current}]" if current else label,
+        None,
+        candidates=[],
         optional=True,
-        keep_custom_prefix=True,
     )
 
 
