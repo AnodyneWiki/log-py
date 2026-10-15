@@ -701,6 +701,7 @@ def _menu_candidates(
     candidates: list[str],
     aliases: dict[str, list[str]] | None = None,
     labels_by_value: dict[str, str] | None = None,
+    keep_custom_prefix: bool = False,
 ) -> tuple[list[str], dict[str, str]]:
     aliases = aliases or {}
     labels_by_value = labels_by_value or {}
@@ -711,7 +712,7 @@ def _menu_candidates(
     for candidate in candidates:
         if not candidate:
             continue
-        candidate = _strip_base_menu_choice_marker(candidate)
+        candidate = candidate.strip() if keep_custom_prefix else _strip_base_menu_choice_marker(candidate)
         if not candidate:
             continue
         canonical = _format_route_for_log(candidate) if aliases is ROA_ALIASES else None
@@ -769,6 +770,7 @@ def _menu_for_value(
     aliases: dict[str, list[str]] | None = None,
     labels_by_value: dict[str, str] | None = None,
     allow_back: bool = False,
+    keep_custom_prefix: bool = False,
 ) -> str | None:
     if not shutil.which(executable):
         raise typer.BadParameter(f"{executable} was not found in PATH")
@@ -776,7 +778,7 @@ def _menu_for_value(
     menu_candidates = candidates or ([current] if current else [])
     if allow_back:
         menu_candidates = [*menu_candidates, BACK_CHOICE]
-    labels, label_values = _menu_candidates(menu_candidates, aliases, labels_by_value)
+    labels, label_values = _menu_candidates(menu_candidates, aliases, labels_by_value, keep_custom_prefix)
     menu_input = "\n".join(labels)
     if menu_input:
         menu_input += "\n"
@@ -818,7 +820,7 @@ def _menu_for_value(
         raise BackRequested
     if value:
         selected = label_values.get(value)
-        if selected is None and value.startswith(MENU_CUSTOM_PREFIX):
+        if selected is None and not keep_custom_prefix and value.startswith(MENU_CUSTOM_PREFIX):
             selected = value.removeprefix(MENU_CUSTOM_PREFIX).strip()
         return selected or _resolve_alias(value, aliases or {})
     if optional:
@@ -2514,21 +2516,25 @@ def _menu_for_dosage(
         dosage_candidates.append(current)
     dosage_candidates.extend(candidates or [])
     while True:
-        amount = _menu_for_value(
+        raw_amount = _menu_for_value(
             executable,
             label,
             current_amount,
             candidates=dosage_candidates,
             optional=optional,
             allow_back=allow_back,
+            keep_custom_prefix=True,
         )
-        if amount is None:
+        if raw_amount is None:
             return ""
+        is_approximate, amount = _split_dosage_guess_marker(raw_amount)
+        amount = amount or ""
         selected_amount, selected_unit = _split_dosage_unit(amount)
         if selected_unit:
-            return _format_dosage(selected_amount or amount, selected_unit)
+            dosage = _format_dosage(selected_amount or amount, selected_unit)
+            return _mark_guess_dosage(dosage) if is_approximate else dosage
         if _is_custom_dosage(amount):
-            return amount.strip()
+            return _mark_guess_dosage(amount.strip()) if is_approximate else amount.strip()
         unit_candidates = [current_unit] if current_unit else []
         unit_candidates.extend(UNIT_CHOICES)
         try:
@@ -2541,7 +2547,8 @@ def _menu_for_dosage(
             )
         except BackRequested:
             continue
-        return _format_dosage(amount, unit)
+        dosage = _format_dosage(amount, unit)
+        return _mark_guess_dosage(dosage) if is_approximate else dosage
 
 
 def _prompt_for_extra_info(
