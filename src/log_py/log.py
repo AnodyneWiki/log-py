@@ -178,6 +178,7 @@ DAILY_USAGE_TODAY = "today"
 MENU_MOUSE_ENABLED = True
 MENU_TOOL_COMMAND: list[str] = []
 MENU_PROMPT_PLACEHOLDER = "{prompt}"
+FUZZEL_MENU_TOOL = "fuzzel --dmenu"
 
 
 class BackRequested(Exception):
@@ -201,7 +202,6 @@ class InputMode(str, Enum):
     dmenu = "dmenu"
     bemenu = "bemenu"
     menu = "menu"
-    # fuzzel = "fuzzel"
 
 
 class LogKind(str, Enum):
@@ -773,7 +773,6 @@ def _resolve_input_mode(
             (dmenu, InputMode.dmenu),
             (bemenu, InputMode.bemenu),
             (menu, InputMode.menu),
-            # (fuzzel, InputMode.fuzzel),
         )
         if enabled
     ]
@@ -845,17 +844,6 @@ def _menu_for_value(
         if not MENU_MOUSE_ENABLED:
             command.append("--no-cursor")
             command.append("--single-instance")
-    # if executable == InputMode.fuzzel.value:
-    #     command = [
-    #         executable,
-    #         "--dmenu",
-    #         f"--prompt={label}",
-    #         "--match-mode=fuzzy",
-    #         "--fuzzy-min-length=1",
-    #         "--fuzzy-max-length-discrepancy=4",
-    #         "--fuzzy-max-distance=3",
-    #         "--no-cursor",
-    #     ]
     try:
         completed = subprocess.run(
             command,
@@ -4631,11 +4619,11 @@ def log_ingestion(
         ),
         rich_help_panel="Input Mode",
     )] = None,
-    # fuzzel_mode: Annotated[bool, typer.Option(
-    #     "--fuzzel",
-    #     help="prompt for ingestion fields with fuzzel selectors",
-    #     rich_help_panel="Input Mode",
-    # )] = False,
+    fuzzel_mode: Annotated[bool, typer.Option(
+        "--fuzzel", "-mf",
+        help=f"prompt for ingestion fields with fuzzel selectors (same as --menu-tool '{FUZZEL_MENU_TOOL}')",
+        rich_help_panel="Input Mode",
+    )] = False,
     sync_choices: Annotated[bool, typer.Option(
         "--sync-choices",
         help="scan the CSV log and refresh menu choices, dosages, salts, and substance abbreviations",
@@ -4753,7 +4741,9 @@ def log_ingestion(
     global MENU_MOUSE_ENABLED, MENU_TOOL_COMMAND
 
     MENU_MOUSE_ENABLED = mouse
-    MENU_TOOL_COMMAND = _parse_menu_tool(menu_tool)
+    if fuzzel_mode and menu_tool is not None:
+        raise typer.BadParameter("Choose only one input mode")
+    MENU_TOOL_COMMAND = _parse_menu_tool(FUZZEL_MENU_TOOL if fuzzel_mode else menu_tool)
     if menu_tool is not None and not MENU_TOOL_COMMAND:
         raise typer.BadParameter("--menu-tool must name the menu command")
     started_at = datetime.now(timezone.utc)
@@ -4776,7 +4766,7 @@ def log_ingestion(
             dmenu_mode,
             bemenu_mode,
             menu_tool,
-            # fuzzel_mode,
+            fuzzel_mode,
             flags_mode,
             log_ingestion_action,
             stack_menu_action,

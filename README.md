@@ -98,6 +98,9 @@ logpy --dmenu
 # "bemenu" mode
 logpy --bemenu
 
+# "fuzzel" mode (same as --menu-tool "fuzzel --dmenu")
+logpy --fuzzel
+
 # custom menu mode with any dmenu-style command
 logpy --menu-tool "rofi -dmenu"
 logpy --menu-tool "fuzzel --dmenu --prompt={prompt}"
@@ -117,6 +120,7 @@ When a webhook is configured, the id of each Discord message posted for an inges
 | `--prompt` | | prompt for ingestion fields on stdin |
 | `--dmenu` | | prompt for ingestion fields with dmenu selectors |
 | `--bemenu` | | prompt for ingestion fields with bemenu selectors |
+| `--fuzzel` | `-mf` | prompt for ingestion fields with fuzzel selectors, same as `--menu-tool "fuzzel --dmenu"` |
 | `--menu-tool` | `-mt` | prompt for ingestion fields with a custom dmenu-style command, e.g. `rofi -dmenu`; `{prompt}` is replaced by the prompt text, otherwise `-p <prompt>` is appended |
 | `--sync-choices` | | scan the CSV log and refresh menu choices, dosages, salts, and substance abbreviations |
 | `--log-ingestion` | | start prompt/menu mode directly in the ingestion logger |
