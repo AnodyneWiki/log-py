@@ -104,6 +104,8 @@ logpy --bemenu
 
 The main action menu also offers a "History" entry. It lists the newest 100 logged ingestions, with a "Next 100" choice at the end for older pages. Selecting an entry offers "Edit", which changes one field of that row at a time, and "Remove", which deletes the row. Both rewrite the CSV in place and rebuild the cached menu choices from the remaining rows, so a substance, dosage, or salt that no longer appears in any row stops being suggested. This is a local read of the CSV; the AnodyneWiki lookups of `--sync-choices` are not repeated.
 
+When a webhook is configured, the id of each Discord message posted for an ingestion is stored in `~/.config/logpy/webhook-messages.json`. Editing a log through History updates that message and removing the log deletes it. Messages posted before this file existed have no stored id and are left untouched.
+
 ## Flags
 
 | Flag | Short | Description |

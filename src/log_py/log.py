@@ -33,6 +33,8 @@ SUPPLY_CACHE_FILE = app_dir / "supplies.json"
 SUPPLY_CACHE_VERSION = 1
 STASH_CACHE_FILE = app_dir / "stash.json"
 STASH_CACHE_VERSION = 1
+WEBHOOK_MESSAGE_CACHE_FILE = app_dir / "webhook-messages.json"
+WEBHOOK_MESSAGE_CACHE_VERSION = 1
 SKIP_CHOICE = "Skip"
 LEGACY_UNKNOWN_CHOICE = "Unknown"
 UNKNOWN_SUBSTANCE_TITLE = "Unknown"
@@ -3144,6 +3146,195 @@ def _show_statistics(mode: InputMode, logfile: Path) -> None:
             _show_statistics_lines(mode, section, _statistics_route_lines(period))
 
 
+def _load_webhook_message_cache() -> dict[str, dict[str, dict[str, object]]]:
+    if not WEBHOOK_MESSAGE_CACHE_FILE.exists():
+        return {}
+    try:
+        with open(WEBHOOK_MESSAGE_CACHE_FILE) as infile:
+            raw = json.load(infile)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    logs = raw.get("logs") if isinstance(raw, dict) else None
+    if not isinstance(logs, dict):
+        return {}
+    return {
+        log_key: {ts: record for ts, record in entries.items() if isinstance(record, dict) and record.get("id")}
+        for log_key, entries in logs.items()
+        if isinstance(entries, dict)
+    }
+
+
+def _write_webhook_message_cache(cache: dict[str, dict[str, dict[str, object]]]) -> None:
+    WEBHOOK_MESSAGE_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"version": WEBHOOK_MESSAGE_CACHE_VERSION, "logs": {key: value for key, value in cache.items() if value}}
+    tmpfile = WEBHOOK_MESSAGE_CACHE_FILE.with_suffix(f"{WEBHOOK_MESSAGE_CACHE_FILE.suffix}.tmp")
+    with open(tmpfile, "w") as outfile:
+        json.dump(payload, outfile, indent=2, sort_keys=True)
+        outfile.write("\n")
+    tmpfile.replace(WEBHOOK_MESSAGE_CACHE_FILE)
+
+
+def _webhook_id(webhook_url: str) -> str | None:
+    match = re.search(r"/webhooks/(?P<id>\d+)/", webhook_url)
+    return match.group("id") if match else None
+
+
+def _store_webhook_message(logfile: Path, timestamp: str, message_id: str, webhook_url: str, backdated: bool) -> None:
+    cache = _load_webhook_message_cache()
+    cache.setdefault(_logfile_cache_key(logfile), {})[timestamp] = {
+        "id": message_id,
+        "webhook_id": _webhook_id(webhook_url),
+        "backdated": backdated,
+    }
+    _write_webhook_message_cache(cache)
+
+
+def _get_webhook_message(logfile: Path, timestamp: str) -> dict[str, object] | None:
+    return _load_webhook_message_cache().get(_logfile_cache_key(logfile), {}).get(timestamp)
+
+
+def _pop_webhook_message(logfile: Path, timestamp: str) -> dict[str, object] | None:
+    cache = _load_webhook_message_cache()
+    record = cache.get(_logfile_cache_key(logfile), {}).pop(timestamp, None)
+    if record is not None:
+        _write_webhook_message_cache(cache)
+    return record
+
+
+def _move_webhook_message(logfile: Path, old_timestamp: str, new_timestamp: str) -> None:
+    if old_timestamp == new_timestamp:
+        return
+    cache = _load_webhook_message_cache()
+    entries = cache.get(_logfile_cache_key(logfile), {})
+    record = entries.pop(old_timestamp, None)
+    if record is None:
+        return
+    entries[new_timestamp] = record
+    _write_webhook_message_cache(cache)
+
+
+def _webhook_message_url(webhook_url: str, message_id: str) -> str:
+    return f"{webhook_url.rstrip('/')}/messages/{message_id}"
+
+
+def _post_webhook_message(webhook_url: str, logline: str) -> str | None:
+    response = requests.post(webhook_url, params={"wait": "true"}, json={"content": logline, "flags": 4})
+    response.raise_for_status()
+    con.print(f"Status: {response.status_code}")
+    try:
+        message_id = response.json().get("id")
+    except ValueError:
+        return None
+    return str(message_id) if message_id else None
+
+
+def _edit_webhook_message(webhook_url: str, message_id: str, logline: str) -> None:
+    response = requests.patch(_webhook_message_url(webhook_url, message_id), json={"content": logline, "flags": 4})
+    response.raise_for_status()
+
+
+def _delete_webhook_message(webhook_url: str, message_id: str) -> None:
+    response = requests.delete(_webhook_message_url(webhook_url, message_id))
+    response.raise_for_status()
+
+
+def _format_logline(
+    user: str,
+    userpage: str | None,
+    kind: LogKind,
+    dosage: str,
+    substance_md: str,
+    salt: str | None,
+    roa: str,
+    logged_site: str | None,
+    note: str | None,
+    time_now: str,
+    is_backdated: bool,
+) -> str:
+    user_md = f"[{user}]({userpage})" if userpage else user
+    if kind == LogKind.mixture:
+        logline = f"{user_md}: {dosage} {substance_md}" + (
+            f" {salt.replace('<','[').replace('>',']')}" if salt else ""
+        )
+    else:
+        logline = f"{user_md}: {dosage} {substance_md}" + (
+            f" [{salt}]" if salt else ""
+        )
+    webhook_site = _format_webhook_site(roa, logged_site)
+    return logline + f" via {roa}" + (
+        f" at {webhook_site} site" if webhook_site else ""
+    ) + (
+        f"\n> {note}" if note else ""
+    ) + (
+        f"\n> {time_now}" if is_backdated else ""
+    )
+
+
+def _cached_substance_md(title: str) -> str:
+    """Link substances from the local substance cache only (no lookups)."""
+    components = _split_mixture_values(title) or [title]
+    titles = []
+    linked = []
+    for component in components:
+        cached = _resolve_cached_substance_title(component)
+        titles.append(cached or component)
+        linked.append(_format_substance_link(cached) if cached else component)
+    if len(components) <= 1:
+        return linked[0]
+    return _format_linked_substance_mixture(titles, linked)
+
+
+def _logline_from_row(row: list[str], userpage: str | None, backdated: bool) -> str:
+    timestamp, user, title, dosage, roa, site, salt, note = _padded_log_row(row)[:len(LOG_COLUMNS)]
+    if _is_mixture_value(title):
+        kind = LogKind.mixture
+    elif "@" in dosage:
+        kind = LogKind.solution
+    else:
+        kind = LogKind.single
+    return _format_logline(user, userpage, kind, dosage, _cached_substance_md(title), salt or None, roa, site or None, note or None, timestamp, backdated)
+
+
+def _webhook_record_usable(record: dict[str, object] | None, webhook: HttpUrl | None) -> str | None:
+    """Return the webhook URL to use for a stored message, or None with a reason printed."""
+    if not record:
+        return None
+    if not webhook:
+        err_con.print("Webhook message not updated: no webhook configured", style="bold yellow")
+        return None
+    webhook_url = webhook.encoded_string()
+    stored_id = record.get("webhook_id")
+    if stored_id and stored_id != _webhook_id(webhook_url):
+        err_con.print("Webhook message not updated: it was posted through a different webhook", style="bold yellow")
+        return None
+    return webhook_url
+
+
+def _delete_history_webhook_message(logfile: Path, timestamp: str, webhook: HttpUrl | None) -> None:
+    record = _pop_webhook_message(logfile, timestamp)
+    webhook_url = _webhook_record_usable(record, webhook)
+    if not webhook_url:
+        return
+    try:
+        _delete_webhook_message(webhook_url, str(record["id"]))
+        con.print("Deleted webhook message.")
+    except Exception as exc:
+        err_con.print(f"Webhook delete failed: '{exc}'", style="bold yellow")
+
+
+def _update_history_webhook_message(logfile: Path, row: list[str], webhook: HttpUrl | None, userpage: str | None) -> None:
+    timestamp = _padded_log_row(row)[0]
+    record = _get_webhook_message(logfile, timestamp)
+    webhook_url = _webhook_record_usable(record, webhook)
+    if not webhook_url:
+        return
+    try:
+        _edit_webhook_message(webhook_url, str(record["id"]), _logline_from_row(row, userpage, bool(record.get("backdated"))))
+        con.print("Updated webhook message.")
+    except Exception as exc:
+        err_con.print(f"Webhook edit failed: '{exc}'", style="bold yellow")
+
+
 def _read_log_rows(logfile: Path) -> list[list[str]]:
     if not logfile.exists():
         return []
@@ -3206,7 +3397,7 @@ def _normalize_history_value(column: str, value: str) -> str:
     return value
 
 
-def _edit_history_fields(mode: InputMode, logfile: Path, row_index: int) -> None:
+def _edit_history_fields(mode: InputMode, logfile: Path, row_index: int, webhook: HttpUrl | None, userpage: str | None) -> None:
     while True:
         rows = _read_log_rows(logfile)
         if row_index >= len(rows):
@@ -3238,9 +3429,12 @@ def _edit_history_fields(mode: InputMode, logfile: Path, row_index: int) -> None
         rows[row_index] = row
         _write_log_rows(logfile, rows)
         con.print(f"Updated {selected}.")
+        if selected == "timestamp":
+            _move_webhook_message(logfile, current, row[column_index])
+        _update_history_webhook_message(logfile, row, webhook, userpage)
 
 
-def _edit_history_entry(mode: InputMode, logfile: Path, row_index: int) -> None:
+def _edit_history_entry(mode: InputMode, logfile: Path, row_index: int, webhook: HttpUrl | None, userpage: str | None) -> None:
     while True:
         rows = _read_log_rows(logfile)
         if row_index >= len(rows) or _is_log_header_row(rows[row_index]):
@@ -3253,17 +3447,18 @@ def _edit_history_entry(mode: InputMode, logfile: Path, row_index: int) -> None:
         if action == BACK_CHOICE:
             return
         if action == HISTORY_REMOVE_CHOICE:
-            del rows[row_index]
+            removed = rows.pop(row_index)
             _write_log_rows(logfile, rows)
             con.print("Removed log entry.")
+            _delete_history_webhook_message(logfile, _padded_log_row(removed)[0], webhook)
             return
         if action == HISTORY_EDIT_CHOICE:
-            _edit_history_fields(mode, logfile, row_index)
+            _edit_history_fields(mode, logfile, row_index, webhook, userpage)
             continue
         raise typer.BadParameter(f"Unknown history action: {action}")
 
 
-def _show_history(mode: InputMode, logfile: Path) -> None:
+def _show_history(mode: InputMode, logfile: Path, webhook: HttpUrl | None, userpage: str | None) -> None:
     offset = 0
     while True:
         rows = _read_log_rows(logfile)
@@ -3291,7 +3486,7 @@ def _show_history(mode: InputMode, logfile: Path) -> None:
             continue
         if selected not in labels_by_value:
             raise typer.BadParameter(f"Unknown log entry: {selected}")
-        _edit_history_entry(mode, logfile, int(selected))
+        _edit_history_entry(mode, logfile, int(selected), webhook, userpage)
 
 
 def _format_list_value(values: list[str | None]) -> str | None:
@@ -4612,7 +4807,7 @@ def log_ingestion(
             )
             return False
         if action == ACTION_HISTORY:
-            _show_history(mode, _require_option("--csv", logfile))
+            _show_history(mode, _require_option("--csv", logfile), webhook, userpage)
             return False
         if action != ACTION_LOG_INGESTION:
             raise typer.BadParameter(f"Unknown action: {action}")
@@ -4687,22 +4882,8 @@ def log_ingestion(
         _print_supply_updates("Used supply", _decrement_logged_supplies(note))
         _print_stash_updates("Used stash", _decrement_logged_stash(title, dosage))
 
-        user_md = f"[{user}]({userpage})" if userpage else user
-        if kind == LogKind.mixture:
-            logline = f"{user_md}: {dosage} {substance_md}" + (
-                f" {salt.replace('<','[').replace('>',']')}" if salt else ""
-            )
-        else:
-            logline = f"{user_md}: {dosage} {substance_md}" + (
-                f" [{salt}]" if salt else ""
-            )
-        webhook_site = _format_webhook_site(roa, logged_site)
-        logline += f" via {roa}" + (
-            f" at {webhook_site} site" if webhook_site else ""
-        ) + (
-            f"\n> {note}" if note else ""
-        ) + (
-            f"\n> {time_now}" if is_backdated else ""
+        logline = _format_logline(
+            user, userpage, kind, dosage, substance_md, salt, roa, logged_site, note, time_now, is_backdated
         )
 
         if notify:
@@ -4710,9 +4891,9 @@ def log_ingestion(
 
         if webhook:
             try:
-                p = requests.post(webhook.encoded_string(), json={ "content": logline, "flags": 4})
-                p.raise_for_status()
-                con.print(f"Status: {p.status_code}")
+                message_id = _post_webhook_message(webhook.encoded_string(), logline)
+                if message_id:
+                    _store_webhook_message(logfile, time_now, message_id, webhook.encoded_string(), is_backdated)
             except Exception as e:
                 err_con.print(f"Webhook failed: '{e}'", style="bold yellow")
 
