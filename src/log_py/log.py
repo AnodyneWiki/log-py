@@ -3712,13 +3712,19 @@ def _prompt_json_text(mode: InputMode, label: str, current: str | None) -> str |
     cancels."""
     if mode == InputMode.prompt:
         return _prompt_for_value(label, current, optional=True)
-    return _menu_for_value(
+    # The only entry is "Close" (cancel), so the menu tool always has an entry
+    # to show and typed text such as "60mg" cannot fuzzy-match it.
+    value = _menu_for_value(
         mode.value,
         f"{label} [{current}]" if current else label,
-        None,
-        candidates=[],
+        USERPAGE_CLOSE_CHOICE,
+        candidates=[USERPAGE_CLOSE_CHOICE],
+        labels_by_value={USERPAGE_CLOSE_CHOICE: USERPAGE_CLOSE_CHOICE},
         optional=True,
     )
+    if value is None or value == USERPAGE_CLOSE_CHOICE:
+        return None
+    return value
 
 
 def _json_container_at(root: object, path: list[object]) -> object:
