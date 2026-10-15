@@ -2433,11 +2433,41 @@ def _eval_decimal_math_expression(value: str) -> Decimal:
     return eval_node(parsed)
 
 
-def _format_dosage_amount(amount: str) -> str:
+DOSAGE_RANGE_AMOUNT_RE = re.compile(
+    r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)\s*-\s*[+-]?(?:\d+(?:\.\d*)?|\.\d+)$"
+)
+
+
+def _is_dosage_math_expression(amount: str) -> bool:
     amount = amount.strip()
     if not re.search(r"[+\-*/()]", amount):
-        return amount
-    return _format_decimal(_eval_decimal_math_expression(amount))
+        return False
+    return not DOSAGE_RANGE_AMOUNT_RE.match(amount)
+
+
+def _format_dosage_amount(amount: str) -> str:
+    is_approximate, amount = _split_dosage_guess_marker(amount)
+    amount = (amount or "").strip()
+    if _is_dosage_math_expression(amount):
+        amount = _format_decimal(_eval_decimal_math_expression(amount))
+    return _mark_guess_dosage(amount) if is_approximate else amount
+
+
+def _format_dosage_expression(dosage: str) -> str:
+    """Evaluate a math expression in a complete dosage such as '~25*2mg@1ml' to '~50mg@1ml'."""
+    dosage = dosage.strip()
+    if "@" in dosage:
+        before, after = [part.strip() for part in dosage.split("@", 1)]
+        if before.endswith("ml") and after:
+            return f"{before}@{_format_dosage_expression(after)}"
+        return f"{_format_dosage_expression(before)}@{after}"
+    is_approximate, stripped = _split_dosage_guess_marker(dosage)
+    stripped = (stripped or "").strip()
+    amount, unit = _split_dosage_unit(stripped)
+    if not amount or _is_custom_dosage(amount) or not _is_dosage_math_expression(amount):
+        return dosage
+    formatted = f"{_format_dosage_amount(amount)}{unit or ''}"
+    return _mark_guess_dosage(formatted) if is_approximate else formatted
 
 
 def _format_dosage(amount: str, unit: str | None) -> str:
@@ -3167,7 +3197,7 @@ def _format_mixture(
         _format_salt_for_log(_resolve_alias(salt, SALT_ALIASES)) if salt else None
         for salt in salts
     ]
-    resolved_dosages = [dosage.strip() for dosage in dosages]
+    resolved_dosages = [_format_dosage_expression(dosage) for dosage in dosages]
     dosage_value = _format_wrapped_list_value(resolved_dosages)
     volume_ml = _format_solution_volume(volume_ml)
     if volume_ml:
@@ -3233,7 +3263,20 @@ def _format_webhook_site(roa: str, site: str | None) -> str | None:
     return f"{side}-{linked_vein}" if side else linked_vein
 
 
+MARKDOWN_LINK_RE = re.compile(
+    r"\[(?P<label>(?:\\.|[^\[\]\\])*)\]\((?:[^()\s]|\([^()]*\))*\)"
+)
+
+
+def _strip_markdown_links(text: str) -> str:
+    def plain_label(match: re.Match) -> str:
+        return re.sub(r"\\(.)", r"\1", match.group("label"))
+
+    return MARKDOWN_LINK_RE.sub(plain_label, text)
+
+
 def _send_notification(description: str) -> None:
+    description = _strip_markdown_links(description)
     if not shutil.which("notify-send"):
         err_con.print("Notification failed: 'notify-send was not found in PATH'", style="bold yellow")
         return
@@ -3310,6 +3353,9 @@ def _format_site_usage_label(usage: tuple[int, int, int, int]) -> str:
 def _site_choice_labels(values: list[str], counts: dict[str, tuple[int, int, int, int]]) -> dict[str, str]:
     labels = {}
     for value in values:
+        if _is_unknown_site(value):
+            labels[value] = value
+            continue
         usage = counts.get(_iv_site_key(value), (0, 0, 0, 0))
         labels[value] = f"{value} {_format_site_usage_label(usage)}"
     return labels
@@ -3789,7 +3835,7 @@ def _format_single_solution_component(
 ) -> tuple[str, str, str | None]:
     return (
         _resolve_alias(substance, SUBSTANCE_ALIASES) or substance,
-        _append_solution_volume(dosage.strip(), volume),
+        _append_solution_volume(_format_dosage_expression(dosage), volume),
         _format_salt_for_log(_resolve_alias(salt, SALT_ALIASES)) if salt else None,
     )
 
@@ -3861,7 +3907,7 @@ def _collect_input(
 
         substance = _resolve_alias(substance, SUBSTANCE_ALIASES) or substance
         salt = _format_salt_for_log(_resolve_alias(salt, SALT_ALIASES))
-        dosage = dosage.strip()
+        dosage = _format_dosage_expression(dosage)
         if _route_supports_solution_volume(roa):
             dosage = _append_solution_volume(dosage, volume)
         if _route_uses_needle(roa):
