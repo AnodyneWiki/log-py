@@ -3404,7 +3404,8 @@ def _format_total_amount_mg(amounts: dict[str, Decimal]) -> str:
         else:
             parts.append(f"{_format_decimal(amount)}{unit}")
     if milligrams:
-        parts.insert(0, f"{_format_decimal(milligrams)}mg")
+        rounded = milligrams.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+        parts.insert(0, f"{_format_decimal(rounded)}mg")
     return ", ".join(parts) if parts else "unknown"
 
 
