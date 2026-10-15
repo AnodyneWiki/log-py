@@ -11,7 +11,7 @@ import subprocess
 import sys
 
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from enum import Enum
 from pathlib import Path
 from typing import Annotated
@@ -1188,6 +1188,15 @@ def _format_decimal(value: Decimal) -> str:
     return format(value.normalize(), "f")
 
 
+def _format_stash_amount(amount: object) -> str:
+    """Stash amounts as shown in menus and messages: rounded to one decimal."""
+    try:
+        value = Decimal(str(amount))
+    except InvalidOperation:
+        return str(amount)
+    return _format_decimal(value.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))
+
+
 def _route_supports_solution_volume(roa: str) -> bool:
     normalized = roa.strip().casefold().replace("-", " ").replace("_", " ")
     compact = normalized.replace(" ", "")
@@ -2122,7 +2131,7 @@ def _remove_stash_entries(values: list[str]) -> list[dict[str, object]]:
 
 def _print_stash_updates(prefix: str, entries: list[dict[str, object]]) -> None:
     for entry in entries:
-        con.print(f"{prefix}: {entry['substance']} ({entry['amount']}{entry['unit']} remaining)")
+        con.print(f"{prefix}: {entry['substance']} ({_format_stash_amount(entry['amount'])}{entry['unit']} remaining)")
 
 
 def _print_stash() -> None:
@@ -2132,7 +2141,7 @@ def _print_stash() -> None:
         return
     con.print("Stash:")
     for entry in sorted(entries, key=lambda item: (str(item["substance"]).casefold(), str(item["unit"]))):
-        con.print(f"- {entry['substance']}: {entry['amount']}{entry['unit']}")
+        con.print(f"- {entry['substance']}: {_format_stash_amount(entry['amount'])}{entry['unit']}")
 
 
 def _decrement_logged_stash(substance: str, dosage: str) -> list[dict[str, object]]:
@@ -2582,7 +2591,7 @@ def _stash_item_id(entry: dict[str, object]) -> str:
 
 
 def _stash_item_label(entry: dict[str, object]) -> str:
-    return f"{entry['substance']} ({entry['amount']}{entry['unit']})"
+    return f"{entry['substance']} ({_format_stash_amount(entry['amount'])}{entry['unit']})"
 
 
 def _select_stash_item(mode: InputMode) -> dict[str, object] | None:
