@@ -250,6 +250,10 @@ class BackRequested(Exception):
     pass
 
 
+class IngestionCancelled(Exception):
+    """Raised when the user backs out of an ingestion started from the main menu."""
+
+
 def _normalize_optional_daily_usage_arg(argv: list[str]) -> None:
     for index, arg in enumerate(argv[1:], 1):
         if arg != "--daily-usage":
@@ -4331,7 +4335,7 @@ def _route_candidates_by_recency(logfile: Path, current: str | None = None) -> l
     return candidates
 
 
-def _menu_for_route(executable: str, logfile: Path, current: str | None = None) -> str:
+def _menu_for_route(executable: str, logfile: Path, current: str | None = None, allow_back: bool = False) -> str:
     roa_candidates = _route_candidates_by_recency(logfile, current)
     current = _format_route_for_log(current)
     roa = _menu_for_value(
@@ -4340,6 +4344,7 @@ def _menu_for_route(executable: str, logfile: Path, current: str | None = None) 
         current,
         candidates=roa_candidates,
         aliases=ROA_ALIASES,
+        allow_back=allow_back,
     )
     if not roa:
         raise typer.BadParameter("Route of administration is required")
@@ -4734,6 +4739,7 @@ def _collect_input(
     needle_gauge: str | None,
     needle_length: str | None,
     syringe_size: str | None,
+    allow_back_to_menu: bool = False,
 ) -> tuple[LogKind, str, str, str, str | None, str | None, str | None, str | None]:
     if mode == InputMode.flags:
         substances = _split_mixture_values(substance)
@@ -4781,7 +4787,12 @@ def _collect_input(
         return kind, substance, dosage, roa, site, salt, note, time
 
     if mode == InputMode.prompt:
-        roa = _format_route_for_log(_prompt_for_value("Route", _format_route_for_log(roa)))
+        if allow_back_to_menu:
+            con.print(f"Enter {BACK_CHOICE} to return to the main menu")
+        route_input = _prompt_for_value("Route", _format_route_for_log(roa))
+        if allow_back_to_menu and route_input and _alias_key(route_input) == _alias_key(BACK_CHOICE):
+            raise IngestionCancelled
+        roa = _format_route_for_log(route_input)
         volume = _prompt_for_value("Volume", volume or UNKNOWN_VOLUME_CHOICE, optional=False)
         selected_syringe = None
         selected_needle = None
@@ -4826,7 +4837,10 @@ def _collect_input(
 
     while True:
         menu = mode.value
-        roa = _menu_for_route(menu, logfile, roa)
+        try:
+            roa = _menu_for_route(menu, logfile, roa, allow_back=allow_back_to_menu)
+        except BackRequested:
+            raise IngestionCancelled from None
         while True:
             try:
                 volume_ml = _menu_for_value(
@@ -5363,21 +5377,29 @@ def log_ingestion(
     logfile = _require_option("--csv", logfile)
     user = _require_option("--user", user)
     while True:
-        kind, substance, dosage, roa, site, salt, note, time = _collect_input(
-            mode,
-            logfile,
-            _coalesce(substance_arg, substance_opt),
-            _coalesce(dosage_arg, dosage_opt),
-            _coalesce(roa_arg, roa_opt),
-            site,
-            salt,
-            note,
-            _coalesce(" ".join(time_arg) if time_arg else None, set_time),
-            volume_opt,
-            needle_gauge_opt,
-            needle_length_opt,
-            syringe_size_opt,
-        )
+        try:
+            kind, substance, dosage, roa, site, salt, note, time = _collect_input(
+                mode,
+                logfile,
+                _coalesce(substance_arg, substance_opt),
+                _coalesce(dosage_arg, dosage_opt),
+                _coalesce(roa_arg, roa_opt),
+                site,
+                salt,
+                note,
+                _coalesce(" ".join(time_arg) if time_arg else None, set_time),
+                volume_opt,
+                needle_gauge_opt,
+                needle_length_opt,
+                syringe_size_opt,
+                allow_back_to_menu=return_to_menu,
+            )
+        except IngestionCancelled:
+            action = _select_prompt_action(mode)
+            while not handle_menu_action(action):
+                action = _select_prompt_action(mode)
+            started_at = datetime.now(timezone.utc)
+            continue
         ingestion_time = (
             _menu_default_ingestion_time(mode, time, offset_time, started_at)
             or _parse_ingestion_time(time, offset_time)
