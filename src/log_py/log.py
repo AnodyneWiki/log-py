@@ -3498,22 +3498,25 @@ def _show_statistics(mode: InputMode, logfile: Path) -> None:
         if timescale == STATISTICS_TIMESCALE_TOTAL:
             # A single all-time period: go straight to the sections.
             period_key = period_keys[0]
+            period_title = timescale
         else:
             period_key = _select_statistics_choice(mode, timescale, period_keys, period_labels)
             if period_key == BACK_CHOICE:
                 continue
+            period_title = f"{timescale}/{period_key}"
         section = _select_statistics_choice(
             mode,
-            period_labels.get(period_key, period_key),
+            period_title,
             [STATISTICS_SECTION_SUBSTANCES, STATISTICS_SECTION_ROUTES],
         )
         if section == BACK_CHOICE:
             continue
         period = periods[period_key]
+        section_title = f"{period_title}/{section}"
         if section == STATISTICS_SECTION_SUBSTANCES:
-            _show_statistics_lines(mode, section, _statistics_substance_lines(period))
+            _show_statistics_lines(mode, section_title, _statistics_substance_lines(period))
         elif section == STATISTICS_SECTION_ROUTES:
-            _show_statistics_lines(mode, section, _statistics_route_lines(period))
+            _show_statistics_lines(mode, section_title, _statistics_route_lines(period))
 
 
 def _load_webhook_message_cache() -> dict[str, dict[str, dict[str, object]]]:
