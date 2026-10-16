@@ -62,7 +62,7 @@ logpy --daily-usage --csv log.csv
 logpy --daily-usage=23.9.2026 --csv log.csv
 ```
 
-Dosage prompts accept simple arithmetic expressions for numeric amounts, e.g. entering `90 / 2` and unit `mg` logs `45mg`. Expressions also work in argument mode and may be prefixed with `~` to mark an approximate dosage, e.g. `~25*2mg` logs and posts `~50mg`.
+Dosage prompts accept simple arithmetic expressions for numeric amounts, e.g. entering `90 / 2` and unit `mg` logs `45mg`. Expressions also work in argument mode (a lone `100/3mg` or `50+10mg` is arithmetic, not a mixture) and may be prefixed with `~` to mark an approximate dosage, e.g. `~25*2mg` logs and posts `~50mg`. Dosage amounts are rounded to two decimals before being logged and posted, so `100/3mg` becomes `33.33mg`.
 
 Track virtual syringe and needle supply counts:
 

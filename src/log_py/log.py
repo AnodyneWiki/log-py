@@ -1035,10 +1035,10 @@ def _scale_dosage_by_volume(dosage: str, ratio: Decimal) -> str:
     if not match:
         raise typer.BadParameter(f"Could not scale dosage by volume: {dosage}")
     amount = _parse_decimal_amount(match.group("amount"))
-    scaled_amount = _format_decimal(amount * ratio)
+    scaled_amount = _format_decimal(_round_dosage_decimal(amount * ratio))
     range_amount = match.group("range_amount")
     scaled_range = (
-        f"-{_format_decimal(_parse_decimal_amount(range_amount) * ratio)}"
+        f"-{_format_decimal(_round_dosage_decimal(_parse_decimal_amount(range_amount) * ratio))}"
         if range_amount else ""
     )
     guess_marker = match.group("guess") or ""
@@ -2487,12 +2487,37 @@ def _is_dosage_math_expression(amount: str) -> bool:
     return not DOSAGE_RANGE_AMOUNT_RE.match(amount)
 
 
+DOSAGE_PLACES = 2
+DOSAGE_LONG_NUMBER_RE = re.compile(r"\d+\.\d{%d,}" % (DOSAGE_PLACES + 1))
+
+
+def _round_dosage_decimal(value: Decimal) -> Decimal:
+    return value.quantize(Decimal(1).scaleb(-DOSAGE_PLACES), rounding=ROUND_HALF_UP)
+
+
+def _round_dosage_numbers(dosage: str) -> str:
+    """Round every number in a dosage string (amounts, ranges, mixture parts,
+    volumes) to DOSAGE_PLACES decimals, so 100/3 is logged as 33.33 not
+    33.3333333333."""
+    return DOSAGE_LONG_NUMBER_RE.sub(lambda match: _format_decimal(_round_dosage_decimal(Decimal(match.group()))), dosage)
+
+
 def _format_dosage_amount(amount: str) -> str:
     is_approximate, amount = _split_dosage_guess_marker(amount)
     amount = (amount or "").strip()
     if _is_dosage_math_expression(amount):
-        amount = _format_decimal(_eval_decimal_math_expression(amount))
+        amount = _format_decimal(_round_dosage_decimal(_eval_decimal_math_expression(amount)))
     return _mark_guess_dosage(amount) if is_approximate else amount
+
+
+def _is_single_dosage_expression(dosage: str | None) -> bool:
+    """True for a lone dosage whose amount is an arithmetic expression such as
+    "100/3mg" or "~50+10mg@1ml" (no list brackets or ";" separators)."""
+    if not dosage or ";" in dosage or _split_bracketed_list_value(dosage.strip()):
+        return False
+    _, stripped = _split_dosage_guess_marker(_dosage_without_volume(dosage))
+    amount, _ = _split_dosage_unit((stripped or "").strip())
+    return bool(amount) and not _is_custom_dosage(amount) and _is_dosage_math_expression(amount)
 
 
 def _format_dosage_expression(dosage: str) -> str:
@@ -5090,6 +5115,9 @@ def _collect_input(
         substances = _split_mixture_values(substance)
         dosages = _split_mixture_values(dosage)
         salts = _split_mixture_values(salt)
+        if len(substances) == 1 and len(dosages) > 1 and _is_single_dosage_expression(dosage):
+            # "100/3mg" or "50+10mg" for one substance is arithmetic, not a mixture.
+            dosages = [dosage.strip()]
         is_mixture = len(substances) > 1 or len(dosages) > 1 or len(salts) > 1
         roa = _format_route_for_log(roa)
 
@@ -5793,6 +5821,7 @@ def log_ingestion(
                 action = _select_prompt_action(mode, bool(userpage))
             started_at = datetime.now(timezone.utc)
             continue
+        dosage = _round_dosage_numbers(dosage)
         ingestion_time = (
             _menu_default_ingestion_time(mode, time, offset_time, started_at)
             or _parse_ingestion_time(time, offset_time)
