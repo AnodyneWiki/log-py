@@ -74,7 +74,9 @@ USERPAGE_ANNOTATE_CHOICE = "Add annotations"
 USERPAGE_MANUAL_CHOICE = "Manually edit userpage"
 JSON_NAME_KEY = "Name"
 JSON_MISSING_PREFIX = "missing:"
-USERPAGE_SUBSTANCES_KEY = "TriedSubstances"
+USERPAGE_SUBSTANCES_KEY = "Substances"
+USERPAGE_LEGACY_KEYS = {"TriedSubstances": "Substances"}
+USERPAGE_LEGACY_SUBSTANCE_KEYS = {"RoutesOfAdministration": "Routes"}
 USERPAGE_ROUTES_KEY = "Routes"
 USERPAGE_ROUTE_FIELDS = ["Name", "Dosage", "Onset", "Comeup", "Duration", "Aftereffectduration"]
 ANNOTATION_FELT_ONSET = "Felt Onset"
@@ -460,6 +462,7 @@ def _download_userpage(userpage: str | None) -> bool:
     except Exception as exc:
         err_con.print(f"Userpage download failed: '{exc}'", style="bold yellow")
         return False
+    _migrate_userpage(data)
     try:
         USERPAGE_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
         tmpfile = USERPAGE_CACHE_FILE.with_suffix(f"{USERPAGE_CACHE_FILE.suffix}.tmp")
@@ -3761,13 +3764,43 @@ def _update_history_webhook_message(logfile: Path, row: list[str], webhook: Http
         err_con.print(f"Webhook edit failed: '{exc}'", style="bold yellow")
 
 
+def _migrate_userpage(root: object) -> bool:
+    """Rename legacy keys in place: TriedSubstances -> Substances at the top
+    level and RoutesOfAdministration -> Routes inside each substance.
+    Returns True when anything changed."""
+    if not isinstance(root, dict):
+        return False
+    changed = False
+    for old, new in USERPAGE_LEGACY_KEYS.items():
+        if old in root:
+            if new not in root:
+                root[new] = root.pop(old)
+            else:
+                del root[old]
+            changed = True
+    substances = root.get(USERPAGE_SUBSTANCES_KEY)
+    for entry in substances if isinstance(substances, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        for old, new in USERPAGE_LEGACY_SUBSTANCE_KEYS.items():
+            if old in entry:
+                if new not in entry:
+                    entry[new] = entry.pop(old)
+                else:
+                    del entry[old]
+                changed = True
+    return changed
+
+
 def _load_userpage_json() -> object:
     if not USERPAGE_CACHE_FILE.exists():
         return {}
     try:
-        return json.loads(USERPAGE_CACHE_FILE.read_text())
+        root = json.loads(USERPAGE_CACHE_FILE.read_text())
     except (OSError, json.JSONDecodeError) as exc:
         raise typer.BadParameter(f"Could not read {USERPAGE_CACHE_FILE}: {exc}") from exc
+    _migrate_userpage(root)
+    return root
 
 
 def _upload_userpage() -> None:
@@ -4059,7 +4092,7 @@ def _format_elapsed(delta: timedelta) -> str:
 
 
 def _userpage_substance_entry(tried: list, name: str) -> dict:
-    """Find or create the TriedSubstances entry for `name`."""
+    """Find or create the Substances entry for `name`."""
     name = (_resolve_alias(name, SUBSTANCE_ALIASES) or name).strip()
     for item in tried:
         if isinstance(item, dict) and isinstance(item.get(JSON_NAME_KEY), str) and \
@@ -4071,7 +4104,7 @@ def _userpage_substance_entry(tried: list, name: str) -> dict:
 
 
 def _userpage_route_entry(entry: dict, roa: str) -> dict | None:
-    """Find or create the route object for `roa` in a TriedSubstances entry."""
+    """Find or create the route object for `roa` in a Substances entry."""
     route_name = _format_route_for_log(roa) or roa.strip().casefold()
     routes = entry.get(USERPAGE_ROUTES_KEY)
     if routes is None:
@@ -4228,9 +4261,9 @@ def _plain_logged_dosage(dosage: str) -> str:
 
 
 def _update_userpage_tried_substance(title: str, dosage: str, roa: str, salt: str | None = None) -> None:
-    """Keep the userpage's TriedSubstances in step with a logged ingestion.
+    """Keep the userpage's Substances in step with a logged ingestion.
 
-    For each logged component: find (or add) its TriedSubstances entry, find
+    For each logged component: find (or add) its Substances entry, find
     (or add, with the logged dosage) the route used, and widen the route's
     "Dosage" range when the logged dosage falls outside it."""
     if not USERPAGE_CACHE_FILE.exists():
