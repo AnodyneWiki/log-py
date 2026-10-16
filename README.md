@@ -27,6 +27,7 @@ mouse = false # disables mouse interaction in dmenu and bemenu selectors
 nusersync = "yourname" # AnodyneWiki usersync user name
 pusersync = "secret"   # AnodyneWiki usersync password; with both set, userpage.json is uploaded after every local change
 notify = true # sends a desktop notification after logging an ingestion
+plotviewer = "imv" # command that displays the plot drawn by the "Plot" action (default: xdg-open)
 ```
 
 When `userpage` points at an AnodyneWiki user page such as `https://anodyne.wiki/user/0xea` and `~/.config/logpy/userpage.json` does not exist yet, logpy downloads `https://anodyne.wiki/api/user/0xea` to that file on its next run. A failed download prints a warning and does not block logging.
@@ -136,7 +137,7 @@ The "Userpage" action is shown only when `userpage` is set. When it is, every lo
 
 The "Statistics" action offers Daily, Weekly, Monthly, Yearly, and Total views. Each period lists its substances (total weight and ingestion count) and its routes of administration (ingestion count and the total weight taken via that route, in mg). Total skips the period list since there is only one.
 
-The "Plot" entry of the Statistics menu draws the estimated blood plasma concentrations of the logged ingestions over time, as `--plot` does from the command line. It asks for the time span (the last 24 hours, 3 days, week, month or year, all time, or a custom start and stop typed as free text such as `2 days ago` or `2025-12-04 10:00`), writes the image to `~/.config/logpy/plot.png` and, in menu modes, opens it with `xdg-open` when available. Every dose is run through a one-compartment pharmacokinetic model with first-order absorption (`src/log_py/plot.py`, a port of dkinplot.rb) and the curves of each substance are summed and drawn as filled areas in mg/L. Mixtures count as one dose per substance, dosages in g and ug are converted to mg, and dosages without a weight (volumes, ranges) are skipped.
+The "Plot" action of the main menu draws the estimated blood plasma concentrations of the logged ingestions over time, as `--plot` does from the command line. It asks for the time span (the last 24 hours, 3 days, week, month or year, all time, or a custom start and stop typed as free text such as `2 days ago` or `2025-12-04 10:00`), writes the image to `~/.config/logpy/plot.png` and displays it right away with the `plotviewer` command (`--plot-viewer`), which defaults to `xdg-open`; `{file}` in the command is replaced by the image path, otherwise the path is appended. logpy waits for the viewer to exit before returning to the menu, so a viewer such as `imv` or `feh` keeps the menu out of the way while the plot is open. Every dose is run through a one-compartment pharmacokinetic model with first-order absorption (`src/log_py/plot.py`, a port of dkinplot.rb) and the curves of each substance are summed and drawn as filled areas in mg/L. Mixtures count as one dose per substance, dosages in g and ug are converted to mg, and dosages without a weight (volumes, ranges) are skipped.
 
 ## Flags
 
@@ -157,6 +158,7 @@ The "Plot" entry of the Statistics menu draws the estimated blood plasma concent
 | `--plot-start` | | start of the plotted time span, e.g. `2 days ago` or `2025-12-04 10:00`; defaults to the first log |
 | `--plot-stop` | | end of the plotted time span; defaults to now |
 | `--plot-font` | | font of the plot, gnuplot style `name,size` (default `monospace,8`; the legend uses one point less) |
+| `--plot-viewer` | | command that displays the plot drawn by the "Plot" menu action, e.g. `imv` or `feh {file}` (default `xdg-open`) |
 | `--add-syringe` / `--add-syringes` | | add syringe stock to the virtual supply cache |
 | `--add-needle` / `--add-needles` | | add needle stock to the virtual supply cache |
 | `--remove-syringe` / `--remove-syringes` | | remove syringe stock from the virtual supply cache |

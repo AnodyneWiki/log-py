@@ -107,6 +107,7 @@ ACTION_SETTINGS = "Settings"
 ACTION_STATISTICS = "Statistics"
 ACTION_HISTORY = "History"
 ACTION_USERPAGE = "Userpage"
+ACTION_PLOT = "Plot"
 USERPAGE_ADD_KEY_CHOICE = "Add key"
 USERPAGE_ADD_ITEM_CHOICE = "Add item"
 USERPAGE_REMOVE_CHOICE = "Remove"
@@ -198,9 +199,9 @@ ACTION_ALIASES = {
     ACTION_STATISTICS: ["statistics", "stats"],
     ACTION_HISTORY: ["history", "logs"],
     ACTION_USERPAGE: ["userpage", "profile"],
+    ACTION_PLOT: ["plot", "graph", "chart"],
 }
 
-STATISTICS_PLOT_CHOICE = "Plot"
 PLOT_RANGE_DAY = "Last 24 hours"
 PLOT_RANGE_THREE_DAYS = "Last 3 days"
 PLOT_RANGE_WEEK = "Last week"
@@ -216,6 +217,7 @@ PLOT_RANGE_DELTAS = {
     PLOT_RANGE_YEAR: timedelta(days=365),
 }
 PLOT_FILE = app_dir / "plot.png"
+DEFAULT_PLOT_VIEWER = "xdg-open"
 
 # Icon names attached to menu choices in fuzzel mode. They are freedesktop icon
 # names, resolved by fuzzel through its configured icon theme.
@@ -233,7 +235,7 @@ MENU_ICONS.update({
     USERPAGE_ANNOTATE_CHOICE: "list-add-symbolic",
     USERPAGE_MANUAL_CHOICE: "document-edit-symbolic",
     ACTION_STATISTICS: "x-office-spreadsheet-symbolic",
-    STATISTICS_PLOT_CHOICE: "image-x-generic-symbolic",
+    ACTION_PLOT: "image-x-generic-symbolic",
     PLOT_RANGE_CUSTOM: "document-edit-symbolic",
     ACTION_SETTINGS: "emblem-system-symbolic",
     BACK_CHOICE: "go-previous-symbolic",
@@ -365,6 +367,7 @@ class LogConfig(BaseModel):
     pusersync: str | None = None
     mouse: bool = True
     notify: bool = False
+    plotviewer: str | None = None
 
     @field_validator("logfile", mode="after")
     def valiadte_path(cls, logfile: Path):
@@ -2050,7 +2053,7 @@ def _edit_settings(mode: InputMode, config_file: Path, current_values: dict[str,
 
 
 def _select_prompt_action(mode: InputMode, include_userpage: bool = True) -> str:
-    actions = [ACTION_LOG_INGESTION, ACTION_EDIT_SUPPLY_STACK, ACTION_EDIT_STASH, ACTION_HISTORY, ACTION_STATISTICS]
+    actions = [ACTION_LOG_INGESTION, ACTION_EDIT_SUPPLY_STACK, ACTION_EDIT_STASH, ACTION_HISTORY, ACTION_STATISTICS, ACTION_PLOT]
     if include_userpage:
         actions.append(ACTION_USERPAGE)
     actions.append(ACTION_SETTINGS)
@@ -3278,7 +3281,7 @@ def _plot_time_range(mode: InputMode) -> tuple[datetime | None, datetime | None]
     while True:
         choice = _select_statistics_choice(
             mode,
-            STATISTICS_PLOT_CHOICE,
+            ACTION_PLOT,
             [*PLOT_RANGE_DELTAS, PLOT_RANGE_ALL, PLOT_RANGE_CUSTOM],
         )
         if choice == BACK_CHOICE:
@@ -3300,37 +3303,56 @@ def _plot_time_range(mode: InputMode) -> tuple[datetime | None, datetime | None]
             err_con.print(str(exc), style="bold yellow")
 
 
-def _show_plot(mode: InputMode, output: Path) -> None:
-    """Open the plot with xdg-open in menu modes; the path is printed either way."""
-    if mode == InputMode.prompt:
+def _plot_viewer_command(viewer: str | None, output: Path) -> list[str]:
+    """The viewer command line; ``{file}`` is replaced by the image path, otherwise it is appended."""
+    try:
+        parts = shlex.split(viewer or DEFAULT_PLOT_VIEWER)
+    except ValueError as exc:
+        raise typer.BadParameter(f"Invalid plot viewer command: {exc}") from None
+    if not parts:
+        parts = [DEFAULT_PLOT_VIEWER]
+    if any("{file}" in part for part in parts):
+        return [part.replace("{file}", str(output)) for part in parts]
+    return [*parts, str(output)]
+
+
+def _show_plot(output: Path, viewer: str | None) -> None:
+    """Display the plot with the configured viewer and wait until it is closed.
+
+    Waiting keeps the menu from popping up over the image; viewers that hand
+    the file off and exit at once (such as xdg-open) just return early.
+    """
+    try:
+        command = _plot_viewer_command(viewer, output)
+    except typer.BadParameter as exc:
+        err_con.print(str(exc), style="bold yellow")
         return
-    opener = shutil.which("xdg-open")
-    if opener is None:
+    if shutil.which(command[0]) is None:
+        err_con.print(
+            f"Plot viewer '{command[0]}' not found; set plotviewer in the config file or pass --plot-viewer. "
+            f"The plot is at {output}",
+            style="bold yellow",
+        )
         return
     try:
-        subprocess.Popen(
-            [opener, str(output)],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+        subprocess.run(command, stdin=subprocess.DEVNULL, check=False)
     except OSError as exc:
         err_con.print(f"Could not open {output}: {exc}", style="bold yellow")
 
 
-def _plot_statistics(mode: InputMode, logfile: Path) -> None:
+def _plot_action(mode: InputMode, logfile: Path, viewer: str | None, font: str = DEFAULT_MAIN_FONT) -> None:
+    """The "Plot" action: ask for the time span, draw the plot and display it."""
     time_range = _plot_time_range(mode)
     if time_range is None:
         return
     start, stop = time_range
     try:
-        plotted = _plot_logs(logfile, PLOT_FILE, start, stop)
+        plotted = _plot_logs(logfile, PLOT_FILE, start, stop, font)
     except typer.BadParameter as exc:
         err_con.print(str(exc), style="bold yellow")
         return
     if plotted:
-        _show_plot(mode, PLOT_FILE)
+        _show_plot(PLOT_FILE, viewer)
 
 
 def _show_statistics(mode: InputMode, logfile: Path) -> None:
@@ -3344,14 +3366,10 @@ def _show_statistics(mode: InputMode, logfile: Path) -> None:
                 STATISTICS_TIMESCALE_MONTHLY,
                 STATISTICS_TIMESCALE_YEARLY,
                 STATISTICS_TIMESCALE_TOTAL,
-                STATISTICS_PLOT_CHOICE,
             ],
         )
         if timescale == BACK_CHOICE:
             return
-        if timescale == STATISTICS_PLOT_CHOICE:
-            _plot_statistics(mode, logfile)
-            continue
         periods = _collect_statistics(logfile, timescale)
         period_keys, period_labels = _period_choices(periods, timescale)
         if not period_keys:
@@ -5773,6 +5791,12 @@ def log_ingestion(
         help='font of the plot, gnuplot style "name,size"',
         rich_help_panel="Plot Options",
     )] = DEFAULT_MAIN_FONT,
+    plotviewer: Annotated[str | None, typer.Option(
+        "--plot-viewer",
+        help='command that displays the plot drawn by the "Plot" menu action, e.g. "imv" or "feh {file}"; '
+        f"defaults to {DEFAULT_PLOT_VIEWER}",
+        rich_help_panel="Plot Options",
+    )] = None,
     logfile: Annotated[Path | None, typer.Option(
         "--csv",
         help="File to write logs to",
@@ -5934,6 +5958,10 @@ def log_ingestion(
             if _menu_logfile(logfile) is not None:
                 _show_statistics(mode, logfile)
             return False
+        if action == ACTION_PLOT:
+            if _menu_logfile(logfile) is not None:
+                _plot_action(mode, logfile, plotviewer, plot_font)
+            return False
         if action == ACTION_SETTINGS:
             _edit_settings(
                 mode,
@@ -5947,6 +5975,7 @@ def log_ingestion(
                     "pusersync": pusersync,
                     "mouse": mouse,
                     "notify": notify,
+                    "plotviewer": plotviewer,
                 },
             )
             return False
