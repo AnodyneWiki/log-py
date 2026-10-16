@@ -31,7 +31,7 @@ notify = true # sends a desktop notification after logging an ingestion
 
 When `userpage` points at an AnodyneWiki user page such as `https://anodyne.wiki/user/0xea` and `~/.config/logpy/userpage.json` does not exist yet, logpy downloads `https://anodyne.wiki/api/user/0xea` to that file on its next run. A failed download prints a warning and does not block logging.
 
-A `userpage.json` that still uses the older `TriedSubstances` key, or `RoutesOfAdministration` inside a substance, is migrated to `Substances` and `Routes` when it is read or downloaded.
+A `userpage.json` that still uses the older top-level keys `TriedSubstances` or `RoutesOfAdministration` has them renamed to `Substances` and `Routes` when it is read or downloaded.
 
 When `nusersync` and `pusersync` are set, every local change to `userpage.json` (from the Userpage editor or the automatic `Substances` update) is also uploaded with a `PUT` to `https://anodyne.wiki/api/usersync/<nusersync>` using basic authentication. Downloads from upstream are not re-uploaded. A failed upload prints a warning; the local file keeps the change.
 

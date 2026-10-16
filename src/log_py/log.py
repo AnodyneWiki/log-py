@@ -75,8 +75,7 @@ USERPAGE_MANUAL_CHOICE = "Manually edit userpage"
 JSON_NAME_KEY = "Name"
 JSON_MISSING_PREFIX = "missing:"
 USERPAGE_SUBSTANCES_KEY = "Substances"
-USERPAGE_LEGACY_KEYS = {"TriedSubstances": "Substances"}
-USERPAGE_LEGACY_SUBSTANCE_KEYS = {"RoutesOfAdministration": "Routes"}
+USERPAGE_LEGACY_KEYS = {"TriedSubstances": "Substances", "RoutesOfAdministration": "Routes"}
 USERPAGE_ROUTES_KEY = "Routes"
 USERPAGE_ROUTE_FIELDS = ["Name", "Dosage", "Onset", "Comeup", "Duration", "Aftereffectduration"]
 ANNOTATION_FELT_ONSET = "Felt Onset"
@@ -3765,9 +3764,8 @@ def _update_history_webhook_message(logfile: Path, row: list[str], webhook: Http
 
 
 def _migrate_userpage(root: object) -> bool:
-    """Rename legacy keys in place: TriedSubstances -> Substances at the top
-    level and RoutesOfAdministration -> Routes inside each substance.
-    Returns True when anything changed."""
+    """Rename legacy top-level keys in place (TriedSubstances -> Substances,
+    RoutesOfAdministration -> Routes). Returns True when anything changed."""
     if not isinstance(root, dict):
         return False
     changed = False
@@ -3778,17 +3776,6 @@ def _migrate_userpage(root: object) -> bool:
             else:
                 del root[old]
             changed = True
-    substances = root.get(USERPAGE_SUBSTANCES_KEY)
-    for entry in substances if isinstance(substances, list) else []:
-        if not isinstance(entry, dict):
-            continue
-        for old, new in USERPAGE_LEGACY_SUBSTANCE_KEYS.items():
-            if old in entry:
-                if new not in entry:
-                    entry[new] = entry.pop(old)
-                else:
-                    del entry[old]
-                changed = True
     return changed
 
 
