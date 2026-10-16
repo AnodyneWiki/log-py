@@ -23,6 +23,7 @@ from pydantic import BaseModel, HttpUrl, field_validator
 from typer_config import toml_loader, conf_callback_factory
 from rich.console import Console
 
+from log_py.effects import IE_EFFECTS
 from log_py.salts import SALT_ALIASES, SALT_CHOICES
 
 con = Console()
@@ -97,6 +98,17 @@ HISTORY_NEXT_CHOICE = f"Next {HISTORY_PAGE_SIZE}"
 HISTORY_GOTO_CHOICE = "Goto Page: ?"
 HISTORY_BROWSE_CHOICE = "Browse Logs"
 HISTORY_IMPORT_CHOICE = "Import Journal Export"
+HISTORY_WIPE_CHOICE = "Wipe logs"
+EFFECT_SEVERITY_CHOICES = [
+    ("Unknown", ""),
+    ("Light Severity", "{sev 'light'}"),
+    ("Moderate Severity", "{sev 'moderate'}"),
+    ("Strong Severity", "{sev 'strong'}"),
+    ("Intense Severity", "{sev 'intense'}"),
+]
+EFFECT_REF_UNREFERENCED = "unreferenced effect"
+EFFECT_REF_INDEX = "effect index effect"
+EFFECT_REF_WIKIPEDIA = "wikipedia ref to effect"
 HISTORY_EDIT_CHOICE = "Edit"
 HISTORY_REMOVE_CHOICE = "Remove"
 LOG_COLUMNS = ["timestamp", "user", "substance", "dosage", "roa", "site", "salt", "note"]
@@ -173,6 +185,7 @@ MENU_ICONS = {
     HISTORY_GOTO_CHOICE: "go-jump-symbolic",
     HISTORY_BROWSE_CHOICE: "view-list-symbolic",
     HISTORY_IMPORT_CHOICE: "document-open-symbolic",
+    HISTORY_WIPE_CHOICE: "edit-delete-symbolic",
     HISTORY_EDIT_CHOICE: "document-edit-symbolic",
     HISTORY_REMOVE_CHOICE: "edit-delete-symbolic",
     SUPPLY_ACTION_ADD: "list-add-symbolic",
@@ -3872,6 +3885,8 @@ def _userpage_schema(path: list[object]) -> dict[str, object]:
         return {"item": "route"}
     if pattern == (USERPAGE_SUBSTANCES_KEY, "*", USERPAGE_ROUTES_KEY, "*"):
         return {"fields": {field: "str" for field in USERPAGE_ROUTE_FIELDS}}
+    if pattern == (USERPAGE_SUBSTANCES_KEY, "*", "Effects"):
+        return {"item": "effect"}
     if len(pattern) == 3 and pattern[:2] == (USERPAGE_SUBSTANCES_KEY, "*") and pattern[2] in USERPAGE_SUBSTANCE_LIST_FIELDS:
         return {"item": "str"}
     return {}
@@ -3925,6 +3940,14 @@ def _edit_json_container(mode: InputMode, root: object, path: list[object]) -> N
                 _write_userpage_json(root)
                 con.print(f"Added {item_shape} {name.strip()}.")
                 _edit_json_container(mode, root, [*path, len(container) - 1])
+                continue
+            if item_shape == "effect":
+                value = _prompt_effect_value(mode, "Effect")
+                if value is None:
+                    continue
+                container.append(value)
+                _write_userpage_json(root)
+                con.print(f"Added effect {value}.")
                 continue
             text = _prompt_json_text(mode, f"Item {len(container)}", None)
             if text is None:
@@ -4125,7 +4148,7 @@ def _annotate_log_entry(mode: InputMode, row: list[str]) -> None:
             continue
         if choice == ANNOTATION_FELT_EFFECT:
             entry = _userpage_substance_entry(tried, names[0])
-            value = _prompt_annotation_text(mode, f"{choice} ({names[0]})", _all_userpage_effects(root))
+            value = _prompt_effect_value(mode, f"{choice} ({names[0]})")
             if value is None or not value.strip():
                 continue
             effects = entry.get("Effects")
@@ -4526,9 +4549,66 @@ def _prompt_import_path(mode: InputMode) -> Path | None:
     return path
 
 
+def _prompt_free_text(mode: InputMode, label: str) -> str | None:
+    """Free text; in menu modes only Back is listed so typed text comes back verbatim."""
+    if mode == InputMode.prompt:
+        return _prompt_for_value(label, None, optional=True)
+    text = _menu_for_value(mode.value, label, None, candidates=[BACK_CHOICE], optional=True)
+    if text is None or _alias_key(text) == _alias_key(BACK_CHOICE):
+        return None
+    return text
+
+
+def _prompt_effect_value(mode: InputMode, label: str) -> str | None:
+    """Compose an Effects entry: a severity token, then an unreferenced text,
+    an effect-index reference ({xeff '...'}) or a Wikipedia reference ({wkp '...'})."""
+    severity_labels = [name for name, _ in EFFECT_SEVERITY_CHOICES]
+    severity_choice = _select_statistics_choice(mode, f"{label} / Severity", severity_labels)
+    if severity_choice == BACK_CHOICE or severity_choice not in severity_labels:
+        return None
+    severity = dict(EFFECT_SEVERITY_CHOICES)[severity_choice]
+    kind = _select_statistics_choice(
+        mode, f"{label} / Reference", [EFFECT_REF_UNREFERENCED, EFFECT_REF_INDEX, EFFECT_REF_WIKIPEDIA]
+    )
+    if kind == BACK_CHOICE:
+        return None
+    if kind == EFFECT_REF_UNREFERENCED:
+        text = _prompt_free_text(mode, f"{label} / Effect")
+        reference = text.strip() if text and text.strip() else None
+    elif kind == EFFECT_REF_INDEX:
+        effect = _select_statistics_choice(mode, f"{label} / Effect index", list(IE_EFFECTS))
+        reference = f"{{xeff '{effect}'}}" if effect != BACK_CHOICE and effect in IE_EFFECTS else None
+    elif kind == EFFECT_REF_WIKIPEDIA:
+        article = _prompt_free_text(mode, f"{label} / Wikipedia article")
+        reference = f"{{wkp '{article.strip()}'}}" if article and article.strip() else None
+    else:
+        raise typer.BadParameter(f"Unknown effect reference: {kind}")
+    if reference is None:
+        return None
+    return f"{severity} {reference}".strip()
+
+
+def _confirm_choice(mode: InputMode, question: str) -> bool:
+    if mode == InputMode.prompt:
+        return typer.confirm(question, default=False)
+    answer = _menu_for_value(mode.value, question, "No", candidates=["No", "Yes"], aliases=EXTRA_INFO_ALIASES, optional=True)
+    return answer == "Yes"
+
+
+def _wipe_logs(logfile: Path) -> None:
+    rows = _read_log_rows(logfile)
+    header = [rows[0]] if rows and _is_log_header_row(rows[0]) else []
+    count = len(rows) - len(header)
+    _write_log_rows(logfile, header)
+    cache = _load_webhook_message_cache()
+    if cache.pop(_logfile_cache_key(logfile), None) is not None:
+        _write_webhook_message_cache(cache)
+    con.print(f"Wiped {count} logs from {logfile}.")
+
+
 def _history_menu(mode: InputMode, logfile: Path, webhook: HttpUrl | None, userpage: str | None, user: str | None) -> None:
     while True:
-        choice = _select_statistics_choice(mode, ACTION_HISTORY, [HISTORY_BROWSE_CHOICE, HISTORY_IMPORT_CHOICE])
+        choice = _select_statistics_choice(mode, ACTION_HISTORY, [HISTORY_BROWSE_CHOICE, HISTORY_IMPORT_CHOICE, HISTORY_WIPE_CHOICE])
         if choice == BACK_CHOICE:
             return
         if choice == HISTORY_BROWSE_CHOICE:
@@ -4538,6 +4618,17 @@ def _history_menu(mode: InputMode, logfile: Path, webhook: HttpUrl | None, userp
             path = _prompt_import_path(mode)
             if path is not None:
                 _import_journal_export(logfile, path, _require_option("--user", user))
+            continue
+        if choice == HISTORY_WIPE_CHOICE:
+            rows = _read_log_rows(logfile)
+            count = len([row for row in rows if row and not _is_log_header_row(row)])
+            if count == 0:
+                con.print("No logs to wipe.")
+                continue
+            if _confirm_choice(mode, f"Wipe all {count} logs from {logfile}?"):
+                _wipe_logs(logfile)
+            else:
+                con.print("Wipe cancelled.")
             continue
         raise typer.BadParameter(f"Unknown history choice: {choice}")
 
