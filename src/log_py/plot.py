@@ -418,6 +418,8 @@ def _render(
         right=True,
         labelright=False,
     )
+    # Keep the time labels clear of the bottom border.
+    ax.tick_params(axis="x", pad=main_size)
     ax.grid(True, which="major", linestyle=(0, (3, 3)), linewidth=0.5, color=grid_color)
     ax.set_axisbelow(False)
 
