@@ -4188,7 +4188,8 @@ def _annotate_log_entry(mode: InputMode, row: list[str]) -> None:
 
 
 def _add_userpage_annotations(mode: InputMode, logfile: Path | None) -> None:
-    logfile = _require_option("--csv", logfile)
+    if _menu_logfile(logfile) is None:
+        return
     while True:
         rows = _read_log_rows(logfile)
         entries = [(index, row) for index, row in enumerate(rows) if row and not _is_log_header_row(row)]
@@ -5652,6 +5653,14 @@ def _require_option(label: str, value):
     return value
 
 
+def _menu_logfile(logfile: Path | None) -> Path | None:
+    """The log file for a menu action, or None after a warning when none is
+    configured, so the menu can carry on instead of the program exiting."""
+    if logfile is None:
+        err_con.print("No log file configured: set logfile in the config file or pass --csv", style="bold yellow")
+    return logfile
+
+
 def _format_markdown_link_label(label: str) -> str:
     return label.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
 
@@ -6060,7 +6069,8 @@ def log_ingestion(
             _edit_stash(mode)
             return False
         if action == ACTION_STATISTICS:
-            _show_statistics(mode, _require_option("--csv", logfile))
+            if _menu_logfile(logfile) is not None:
+                _show_statistics(mode, logfile)
             return False
         if action == ACTION_SETTINGS:
             _edit_settings(
@@ -6082,7 +6092,8 @@ def log_ingestion(
             _userpage_menu(mode, userpage, logfile)
             return False
         if action == ACTION_HISTORY:
-            _history_menu(mode, _require_option("--csv", logfile), webhook, userpage, user)
+            if _menu_logfile(logfile) is not None:
+                _history_menu(mode, logfile, webhook, userpage, user)
             return False
         if action != ACTION_LOG_INGESTION:
             raise typer.BadParameter(f"Unknown action: {action}")
@@ -6110,6 +6121,15 @@ def log_ingestion(
         if not has_ingestion_input:
             return
 
+    while return_to_menu and (logfile is None or user is None):
+        if logfile is None:
+            _menu_logfile(logfile)
+        else:
+            err_con.print("No user configured: set user in the config file or pass --user", style="bold yellow")
+        action = _select_prompt_action(mode, bool(userpage))
+        while not handle_menu_action(action):
+            action = _select_prompt_action(mode, bool(userpage))
+        started_at = datetime.now(timezone.utc)
     logfile = _require_option("--csv", logfile)
     user = _require_option("--user", user)
     while True:
