@@ -25,6 +25,48 @@ from rich.console import Console
 
 from log_py.effects import IE_EFFECTS
 from log_py.salts import SALT_ALIASES, SALT_CHOICES
+from log_py import menu
+from log_py.menu import (
+    BACK_CHOICE,
+    BackRequested,
+    EXTRA_INFO_ALIASES,
+    FUZZEL_MENU_TOOL,
+    ICON_COLOR_RE,
+    InputMode,
+    MENU_CUSTOM_PREFIX,
+    MENU_ICON_CACHE_DIR,
+    MENU_ICON_FALLBACK_THEMES,
+    MENU_PROMPT_PLACEHOLDER,
+    MENU_WIDTH_FACTOR,
+    _alias_key,
+    _alias_lookup,
+    _choice_label,
+    _confirm_choice,
+    _find_theme_icon,
+    _fuzzel_icon_theme,
+    _icon_base_dirs,
+    _interactive_choice,
+    _invalidate_alias_lookups,
+    _menu_candidates,
+    _menu_entry_with_icon,
+    _menu_for_value,
+    _menu_icons_enabled,
+    _menu_tool_command,
+    _menu_tool_is_fuzzel,
+    _parse_menu_tool,
+    _print_prompt_choices,
+    _prompt_for_value,
+    _prompt_free_text,
+    _prompt_mode_choice,
+    _recolored_icon,
+    _resolve_alias,
+    _select_statistics_choice,
+    _strip_base_menu_choice_marker,
+    _theme_dir_icons,
+    _theme_inherits,
+    MENU_ICONS,
+    register_alias_table,
+)
 
 con = Console()
 err_con = Console(stderr=True)
@@ -57,8 +99,6 @@ UNKNOWN_LENGTH_CHOICE = SKIP_CHOICE
 EMPTY_NOTE_CHOICE = "No note"
 NOW_TIME_CHOICE = "now"
 CUSTOM_TIME_CHOICE = "Custom time"
-BACK_CHOICE = "Back"
-MENU_CUSTOM_PREFIX = "~"
 ACTION_LOG_INGESTION = "Add ingestion"
 ACTION_EDIT_SUPPLY_STACK = "Supplies"
 ACTION_EDIT_STASH = "Stash"
@@ -143,10 +183,6 @@ ROA_ALIASES = {
     "transdermal": ["td", "topical"],
 }
 UNIT_CHOICES = ["mg", "ug", "mcg", "g", "ml"]
-EXTRA_INFO_ALIASES = {
-    "No": ["n"],
-    "Yes": ["y"],
-}
 EXTRA_INFO_SKIP_CHOICE = "Skip"
 EXTRA_INFO_SHOW_CHOICE = "Show"
 EXTRA_INFO_CHOICE_ALIASES = {
@@ -165,7 +201,7 @@ ACTION_ALIASES = {
 
 # Icon names attached to menu choices in fuzzel mode. They are freedesktop icon
 # names, resolved by fuzzel through its configured icon theme.
-MENU_ICONS = {
+MENU_ICONS.update({
     ACTION_LOG_INGESTION: "list-add-symbolic",
     ACTION_EDIT_SUPPLY_STACK: "applications-science-symbolic",
     ACTION_EDIT_STASH: "package-x-generic-symbolic",
@@ -207,7 +243,7 @@ MENU_ICONS = {
     EMPTY_NOTE_CHOICE: "edit-clear-symbolic",
     NOW_TIME_CHOICE: "alarm-symbolic",
     CUSTOM_TIME_CHOICE: "document-edit-symbolic",
-}
+})
 STATISTICS_TIMESCALE_DAILY = "Daily"
 STATISTICS_TIMESCALE_WEEKLY = "Weekly"
 STATISTICS_TIMESCALE_MONTHLY = "Monthly"
@@ -276,20 +312,7 @@ IV_SITE_WIKIPEDIA_ARTICLES = {
     "dorsal-venous-arch": "Dorsal_venous_arch_of_the_foot",
     "great-saphenous": "Great_saphenous_vein",
 }
-MENU_WIDTH_FACTOR = "0.75"
 DAILY_USAGE_TODAY = "today"
-MENU_MOUSE_ENABLED = True
-MENU_TOOL_COMMAND: list[str] = []
-MENU_PROMPT_PLACEHOLDER = "{prompt}"
-FUZZEL_MENU_TOOL = "fuzzel -d -f Monospace-8 --use-bold -w 90 -l 25 -x 5 -y 5 --no-exit-on-keyboard-focus-loss --keyboard-focus=exclusive --no-mouse -b 101418ff -t a799cdff --prompt-color=ffffffff --input-color=ff00ffff --selection-color=080a0cff --selection-text-color=a99acfff --selection-match-color=ff00ffff --border-color=a2a9b1ff --border-width=1 --border-radius=0"
-MENU_ICON_COLOR = "#ffffff"
-MENU_ICON_CACHE_DIR = app_dir / "icons"
-MENU_ICON_FALLBACK_THEMES = ("Adwaita", "hicolor")
-ICON_COLOR_RE = re.compile(r'((?:fill|stroke|stop-color|color)\s*[:=]\s*["\']?)(#[0-9a-fA-F]{3,8}|currentColor)\b')
-
-
-class BackRequested(Exception):
-    pass
 
 
 class IngestionCancelled(Exception):
@@ -305,14 +328,6 @@ def _normalize_optional_daily_usage_arg(argv: list[str]) -> None:
 
 
 _normalize_optional_daily_usage_arg(sys.argv)
-
-
-class InputMode(str, Enum):
-    flags = "flags"
-    prompt = "prompt"
-    dmenu = "dmenu"
-    bemenu = "bemenu"
-    menu = "menu"
 
 
 class LogKind(str, Enum):
@@ -822,13 +837,6 @@ def _coalesce(*values: str | None) -> str | None:
     return None
 
 
-@functools.lru_cache(maxsize=200_000)
-def _alias_key(value: str) -> str:
-    stripped = value.strip()
-    key = "".join(char for char in stripped.casefold() if char.isalnum())
-    return key or stripped
-
-
 def _is_skip_choice(value: str | None) -> bool:
     if not value:
         return False
@@ -837,41 +845,6 @@ def _is_skip_choice(value: str | None) -> bool:
 
 def _supply_key_part(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")
-
-
-# Alias lookup tables are rebuilt only when their alias dict changes. Entries
-# keep a reference to the dict so its id cannot be reused while cached.
-_ALIAS_LOOKUP_CACHE: dict[int, tuple[dict[str, list[str]], dict[str, str]]] = {}
-
-
-def _invalidate_alias_lookups() -> None:
-    _ALIAS_LOOKUP_CACHE.clear()
-
-
-def _alias_lookup(aliases: dict[str, list[str]]) -> dict[str, str]:
-    if not aliases:
-        return {}
-    cached = _ALIAS_LOOKUP_CACHE.get(id(aliases))
-    if cached is not None and cached[0] is aliases:
-        return cached[1]
-    lookup = {}
-    for canonical, variants in aliases.items():
-        lookup[_alias_key(canonical)] = canonical
-        for variant in variants:
-            lookup[_alias_key(variant)] = canonical
-    if len(_ALIAS_LOOKUP_CACHE) > 64:
-        _ALIAS_LOOKUP_CACHE.clear()
-    _ALIAS_LOOKUP_CACHE[id(aliases)] = (aliases, lookup)
-    return lookup
-
-
-def _resolve_alias(value: str | None, aliases: dict[str, list[str]]) -> str | None:
-    if value is None:
-        return None
-    stripped = value.strip()
-    if not stripped:
-        return stripped
-    return _alias_lookup(aliases).get(_alias_key(stripped), stripped)
 
 
 def _is_list_value(value: str) -> bool:
@@ -892,54 +865,7 @@ def _format_route_for_log(roa: str | None) -> str | None:
     return resolved.strip().casefold()
 
 
-def _choice_label(canonical: str, aliases: dict[str, list[str]]) -> str:
-    variants = aliases.get(canonical)
-    display = canonical.capitalize() if aliases is ROA_ALIASES else canonical
-    if not variants:
-        return display
-    return f"{display} ({', '.join(variants)})"
-
-
-def _strip_base_menu_choice_marker(choice: str) -> str:
-    choice = choice.strip()
-    if choice.startswith(MENU_CUSTOM_PREFIX):
-        return choice.removeprefix(MENU_CUSTOM_PREFIX).lstrip()
-    return choice
-
-
-def _menu_candidates(
-    candidates: list[str],
-    aliases: dict[str, list[str]] | None = None,
-    labels_by_value: dict[str, str] | None = None,
-    keep_custom_prefix: bool = False,
-) -> tuple[list[str], dict[str, str]]:
-    aliases = aliases or {}
-    labels_by_value = labels_by_value or {}
-    labels = []
-    label_values = {}
-    seen = set()
-
-    for candidate in candidates:
-        if not candidate:
-            continue
-        candidate = candidate.strip() if keep_custom_prefix else _strip_base_menu_choice_marker(candidate)
-        if not candidate:
-            continue
-        if _alias_key(candidate) == _alias_key(BACK_CHOICE):
-            # The back choice is navigation, not a value: keep its label as is.
-            canonical = BACK_CHOICE
-        else:
-            canonical = _format_route_for_log(candidate) if aliases is ROA_ALIASES else None
-            canonical = canonical or _resolve_alias(candidate, aliases) or candidate
-        key = _alias_key(canonical)
-        if key in seen:
-            continue
-        seen.add(key)
-        label = labels_by_value.get(canonical) or _choice_label(canonical, aliases)
-        labels.append(label)
-        label_values[label] = canonical
-
-    return labels, label_values
+register_alias_table(ROA_ALIASES, canonicalize=_format_route_for_log, capitalize=True)
 
 
 def _resolve_input_mode(
@@ -964,247 +890,6 @@ def _resolve_input_mode(
     if len(selected) > 1:
         raise typer.BadParameter("Choose only one input mode")
     return selected[0] if selected else InputMode.flags
-
-
-def _prompt_for_value(label: str, current: str | None = None, optional: bool = False) -> str | None:
-    value = typer.prompt(label, default=current or "", show_default=bool(current))
-    value = value.strip()
-    if value:
-        return value
-    if optional:
-        return None
-    raise typer.BadParameter(f"{label} is required")
-
-
-def _parse_menu_tool(value: str | None) -> list[str]:
-    if not value or not value.strip():
-        return []
-    try:
-        return shlex.split(value)
-    except ValueError as exc:
-        raise typer.BadParameter(f"Could not parse --menu-tool command: {exc}") from exc
-
-
-def _menu_tool_is_fuzzel() -> bool:
-    return bool(MENU_TOOL_COMMAND) and Path(MENU_TOOL_COMMAND[0]).name == "fuzzel"
-
-
-def _menu_tool_command(label: str) -> list[str]:
-    """Build the custom menu command. "{prompt}" in any argument is replaced by
-    the prompt text; without it, "-p <prompt>" is appended as dmenu expects."""
-    if _menu_tool_is_fuzzel():
-        label = f"{label}: "
-    if any(MENU_PROMPT_PLACEHOLDER in part for part in MENU_TOOL_COMMAND):
-        return [part.replace(MENU_PROMPT_PLACEHOLDER, label) for part in MENU_TOOL_COMMAND]
-    return [*MENU_TOOL_COMMAND, "-p", label]
-
-
-def _menu_icons_enabled() -> bool:
-    return _menu_tool_is_fuzzel()
-
-
-def _fuzzel_icon_theme() -> str:
-    """The icon theme fuzzel will use: --icon-theme on its command line, else the
-    icon-theme key of its fuzzel.ini, else fuzzel's default (hicolor)."""
-    args = MENU_TOOL_COMMAND
-    config_path = None
-    for index, arg in enumerate(args):
-        if arg.startswith("--icon-theme="):
-            return arg.split("=", 1)[1]
-        if arg in ("--icon-theme", "-I") and index + 1 < len(args):
-            return args[index + 1]
-        if arg.startswith("--config="):
-            config_path = arg.split("=", 1)[1]
-        if arg in ("--config", "-c") and index + 1 < len(args):
-            config_path = args[index + 1]
-    config_home = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
-    config_file = Path(config_path).expanduser() if config_path else config_home / "fuzzel" / "fuzzel.ini"
-    try:
-        text = config_file.read_text()
-    except OSError:
-        return "hicolor"
-    section = "main"
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith(("#", ";")):
-            continue
-        if line.startswith("[") and line.endswith("]"):
-            section = line[1:-1].strip().lower()
-            continue
-        if section == "main" and "=" in line:
-            key, value = (part.strip() for part in line.split("=", 1))
-            if key == "icon-theme" and value:
-                return value
-    return "hicolor"
-
-
-def _icon_base_dirs() -> list[Path]:
-    data_home = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
-    data_dirs = os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share"
-    candidates = [
-        Path.home() / ".icons",
-        data_home / "icons",
-        *[Path(directory) / "icons" for directory in data_dirs.split(":") if directory],
-        Path("/run/current-system/sw/share/icons"),
-    ]
-    unique = []
-    for candidate in candidates:
-        if candidate not in unique:
-            unique.append(candidate)
-    return unique
-
-
-def _theme_inherits(theme_dirs: list[Path]) -> list[str]:
-    for theme_dir in theme_dirs:
-        try:
-            text = (theme_dir / "index.theme").read_text()
-        except OSError:
-            continue
-        for line in text.splitlines():
-            if line.strip().startswith("Inherits="):
-                return [name.strip() for name in line.split("=", 1)[1].split(",") if name.strip()]
-    return []
-
-
-_THEME_ICON_INDEX: dict[Path, dict[str, Path]] = {}
-
-
-def _theme_dir_icons(theme_dir: Path) -> dict[str, Path]:
-    index = _THEME_ICON_INDEX.get(theme_dir)
-    if index is None:
-        index = {}
-        for path in sorted(theme_dir.rglob("*.svg")):
-            parts = path.relative_to(theme_dir).parts
-            rank = (0 if "symbolic" in parts else 1, 0 if "scalable" in parts else 1, len(parts))
-            current = index.get(path.stem)
-            if current is None or rank < current[0]:
-                index[path.stem] = (rank, path)
-        index = {stem: path for stem, (_, path) in index.items()}
-        _THEME_ICON_INDEX[theme_dir] = index
-    return index
-
-
-def _find_theme_icon(theme: str, icon_name: str) -> Path | None:
-    base_dirs = _icon_base_dirs()
-    queue = [theme]
-    visited = set()
-    while queue:
-        current = queue.pop(0)
-        if current in visited:
-            continue
-        visited.add(current)
-        theme_dirs = [base / current for base in base_dirs if (base / current).is_dir()]
-        for theme_dir in theme_dirs:
-            found = _theme_dir_icons(theme_dir).get(icon_name)
-            if found:
-                return found
-        queue.extend(_theme_inherits(theme_dirs))
-        if not queue:
-            queue.extend(name for name in MENU_ICON_FALLBACK_THEMES if name not in visited)
-    return None
-
-
-def _recolored_icon(icon_name: str) -> str:
-    """Return a path to a copy of the theme's icon filled with MENU_ICON_COLOR,
-    or the bare icon name when no theme file is found."""
-    if not MENU_ICON_COLOR:
-        return icon_name
-    theme = _fuzzel_icon_theme()
-    cache_file = MENU_ICON_CACHE_DIR / _supply_key_part(MENU_ICON_COLOR) / _supply_key_part(theme) / f"{icon_name}.svg"
-    if cache_file.is_file():
-        return str(cache_file)
-    source = _find_theme_icon(theme, icon_name)
-    if source is None:
-        return icon_name
-    try:
-        text = source.read_text()
-    except OSError:
-        return icon_name
-    recolored = ICON_COLOR_RE.sub(lambda match: f"{match.group(1)}{MENU_ICON_COLOR}", text)
-    if recolored == text:
-        recolored = re.sub(r"<svg\b", f'<svg fill="{MENU_ICON_COLOR}"', text, count=1)
-    try:
-        cache_file.parent.mkdir(parents=True, exist_ok=True)
-        cache_file.write_text(recolored)
-    except OSError:
-        return icon_name
-    return str(cache_file)
-
-
-def _menu_entry_with_icon(label: str, value: str | None) -> str:
-    icon_name = MENU_ICONS.get(value or "") or MENU_ICONS.get(label)
-    if not icon_name:
-        return label
-    return f"{label}\0icon\x1f{_recolored_icon(icon_name)}"
-
-
-def _menu_for_value(
-    executable: str,
-    label: str,
-    current: str | None = None,
-    candidates: list[str] | None = None,
-    optional: bool = False,
-    aliases: dict[str, list[str]] | None = None,
-    labels_by_value: dict[str, str] | None = None,
-    allow_back: bool = False,
-    keep_custom_prefix: bool = False,
-) -> str | None:
-    if executable == InputMode.menu.value:
-        if not MENU_TOOL_COMMAND:
-            raise typer.BadParameter("--menu-tool must name the menu command")
-        executable_name = MENU_TOOL_COMMAND[0]
-    else:
-        executable_name = executable
-    if not shutil.which(executable_name):
-        raise typer.BadParameter(f"{executable_name} was not found in PATH")
-
-    menu_candidates = candidates or ([current] if current else [])
-    if allow_back:
-        menu_candidates = [*menu_candidates, BACK_CHOICE]
-    labels, label_values = _menu_candidates(menu_candidates, aliases, labels_by_value, keep_custom_prefix)
-    if executable == InputMode.menu.value and _menu_icons_enabled():
-        menu_lines = [_menu_entry_with_icon(item, label_values.get(item)) for item in labels]
-    else:
-        menu_lines = labels
-    menu_input = "\n".join(menu_lines)
-    if menu_input:
-        menu_input += "\n"
-    if executable == InputMode.menu.value:
-        command = _menu_tool_command(label)
-    else:
-        command = [executable, "-p", label]
-    if executable in (InputMode.dmenu.value, InputMode.bemenu.value):
-        command.extend(["-i", "-W", MENU_WIDTH_FACTOR])
-        if not MENU_MOUSE_ENABLED:
-            command.append("--no-cursor")
-            command.append("--single-instance")
-    try:
-        completed = subprocess.run(
-            command,
-            input=menu_input,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-    except OSError as exc:
-        raise typer.BadParameter(f"Could not run {executable}: {exc}") from exc
-
-    if completed.returncode == 1:
-        raise typer.Exit(0)
-    if completed.returncode != 0:
-        raise typer.BadParameter(completed.stderr.strip() or f"{executable} failed")
-
-    value = completed.stdout.strip()
-    if allow_back and _alias_key(value) == _alias_key(BACK_CHOICE):
-        raise BackRequested
-    if value:
-        selected = label_values.get(value)
-        if selected is None and not keep_custom_prefix and value.startswith(MENU_CUSTOM_PREFIX):
-            selected = value.removeprefix(MENU_CUSTOM_PREFIX).strip()
-        return selected or _resolve_alias(value, aliases or {})
-    if optional:
-        return None
-    raise typer.BadParameter(f"{label} is required")
 
 
 VOLUME_RE = re.compile(r"^\s*(?P<amount>[+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*(?P<unit>[a-zA-Zµμ]*)\s*$")
@@ -2344,44 +2029,6 @@ def _edit_settings(mode: InputMode, config_file: Path, current_values: dict[str,
         con.print(f"Updated {selected_key}.")
 
 
-def _prompt_mode_choice(label: str, current: str, aliases: dict[str, list[str]]) -> str:
-    value = _prompt_for_value(label, current, optional=False)
-    return _resolve_alias(value, aliases) or value
-
-
-def _print_prompt_choices(label: str, choices: list[str]) -> None:
-    con.print(f"{label}:")
-    for index, choice in enumerate(choices, 1):
-        con.print(f"{index}. {choice}")
-
-
-def _interactive_choice(
-    mode: InputMode,
-    label: str,
-    current: str,
-    choices: list[str],
-    aliases: dict[str, list[str]] | None,
-) -> str:
-    if mode == InputMode.prompt:
-        _print_prompt_choices(label, choices)
-        value = _prompt_for_value(label, current, optional=False)
-        try:
-            selected_index = int(value)
-        except (TypeError, ValueError):
-            return _resolve_alias(value, aliases or {}) or value
-        if selected_index < 1 or selected_index > len(choices):
-            raise typer.BadParameter(f"{label} selection out of range")
-        return choices[selected_index - 1]
-    return _menu_for_value(
-        mode.value,
-        label,
-        current,
-        candidates=choices,
-        aliases=aliases,
-        labels_by_value={choice: choice for choice in choices},
-    ) or current
-
-
 def _select_prompt_action(mode: InputMode, include_userpage: bool = True) -> str:
     actions = [ACTION_LOG_INGESTION, ACTION_EDIT_SUPPLY_STACK, ACTION_EDIT_STASH, ACTION_HISTORY, ACTION_STATISTICS]
     if include_userpage:
@@ -3499,39 +3146,6 @@ def _show_statistics_lines(mode: InputMode, title: str, lines: list[str]) -> Non
     )
 
 
-def _select_statistics_choice(
-    mode: InputMode,
-    label: str,
-    choices: list[str],
-    labels_by_value: dict[str, str] | None = None,
-    back_choice: str = BACK_CHOICE,
-) -> str:
-    choices = [*choices, back_choice]
-    labels_by_value = {**(labels_by_value or {}), back_choice: back_choice}
-    if mode == InputMode.prompt:
-        labels = [labels_by_value.get(choice, choice) for choice in choices]
-        _print_prompt_choices(label, labels)
-        selected = _prompt_for_value(label, labels[0], optional=False)
-        try:
-            selected_index = int(selected)
-        except (TypeError, ValueError):
-            for choice, choice_label in zip(choices, labels):
-                if selected == choice or selected == choice_label:
-                    return choice
-            return selected
-        if selected_index < 1 or selected_index > len(choices):
-            raise typer.BadParameter(f"{label} selection out of range")
-        return choices[selected_index - 1]
-    selected = _menu_for_value(
-        mode.value,
-        label,
-        choices[0],
-        candidates=choices,
-        labels_by_value=labels_by_value,
-    )
-    return selected or back_choice
-
-
 def _show_statistics(mode: InputMode, logfile: Path) -> None:
     while True:
         timescale = _select_statistics_choice(
@@ -4594,16 +4208,6 @@ def _prompt_import_path(mode: InputMode) -> Path | None:
     return path
 
 
-def _prompt_free_text(mode: InputMode, label: str) -> str | None:
-    """Free text; in menu modes only Back is listed so typed text comes back verbatim."""
-    if mode == InputMode.prompt:
-        return _prompt_for_value(label, None, optional=True)
-    text = _menu_for_value(mode.value, label, None, candidates=[BACK_CHOICE], optional=True)
-    if text is None or _alias_key(text) == _alias_key(BACK_CHOICE):
-        return None
-    return text
-
-
 def _prompt_effect_value(mode: InputMode, label: str) -> str | None:
     """Compose an Effects entry: a severity token, then an unreferenced text,
     an effect-index reference ({xeff '...'}) or a Wikipedia reference ({wkp '...'})."""
@@ -4631,13 +4235,6 @@ def _prompt_effect_value(mode: InputMode, label: str) -> str | None:
     if reference is None:
         return None
     return f"{severity} {reference}".strip()
-
-
-def _confirm_choice(mode: InputMode, question: str) -> bool:
-    if mode == InputMode.prompt:
-        return typer.confirm(question, default=False)
-    answer = _menu_for_value(mode.value, question, "No", candidates=["No", "Yes"], aliases=EXTRA_INFO_ALIASES, optional=True)
-    return answer == "Yes"
 
 
 def _wipe_logs(logfile: Path) -> None:
@@ -5887,7 +5484,7 @@ def log_ingestion(
             "theme's icons unchanged"
         ),
         rich_help_panel="Input Mode",
-    )] = MENU_ICON_COLOR,
+    )] = menu.MENU_ICON_COLOR,
     fuzzel_mode: Annotated[bool, typer.Option(
         "--fuzzel", "-mf",
         help=f"prompt for ingestion fields with fuzzel selectors (same as --menu-tool '{FUZZEL_MENU_TOOL}')",
@@ -6018,17 +5615,17 @@ def log_ingestion(
         is_eager=True,
     )] = None
 ):
-    global MENU_MOUSE_ENABLED, MENU_TOOL_COMMAND, MENU_ICON_COLOR, USERSYNC_CREDENTIALS
+    global USERSYNC_CREDENTIALS
 
-    MENU_MOUSE_ENABLED = mouse
+    menu.MENU_MOUSE_ENABLED = mouse
     USERSYNC_CREDENTIALS = (nusersync, pusersync) if nusersync and pusersync else None
-    MENU_ICON_COLOR = menu_icon_color.strip()
+    menu.MENU_ICON_COLOR = menu_icon_color.strip()
     _ensure_userpage_cache(userpage)
     _ensure_logfile(logfile)
     if fuzzel_mode and menu_tool is not None:
         raise typer.BadParameter("Choose only one input mode")
-    MENU_TOOL_COMMAND = _parse_menu_tool(FUZZEL_MENU_TOOL if fuzzel_mode else menu_tool)
-    if menu_tool is not None and not MENU_TOOL_COMMAND:
+    menu.MENU_TOOL_COMMAND = _parse_menu_tool(FUZZEL_MENU_TOOL if fuzzel_mode else menu_tool)
+    if menu_tool is not None and not menu.MENU_TOOL_COMMAND:
         raise typer.BadParameter("--menu-tool must name the menu command")
     started_at = datetime.now(timezone.utc)
     has_ingestion_input = any(
@@ -6096,7 +5693,7 @@ def log_ingestion(
         _print_daily_usage(logfile, daily_usage)
         return
 
-    mode = _resolve_input_mode(flags_mode, prompt_mode, dmenu_mode, bemenu_mode, False, bool(MENU_TOOL_COMMAND))
+    mode = _resolve_input_mode(flags_mode, prompt_mode, dmenu_mode, bemenu_mode, False, bool(menu.MENU_TOOL_COMMAND))
     base_prompt_action = _resolve_base_prompt_action(log_ingestion_action, stack_menu_action, stash_menu_action)
     if base_prompt_action and mode == InputMode.flags:
         raise typer.BadParameter("--log-ingestion, --stack-menu, and --stash-menu require a prompt/menu mode")
