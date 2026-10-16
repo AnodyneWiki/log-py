@@ -21,7 +21,7 @@ logpy looks for a config file at `~/.config/logpy/config.toml` (or `$LOGPY_CONFI
 
 ```toml
 user = "yourname"
-logfile = "log.csv"
+logfile = "logs.csv" # default: ~/.config/logpy/logs.csv, created with a header row when missing
 webhook = "https://discord.com/api/webhooks/..."
 mouse = false # disables mouse interaction in dmenu and bemenu selectors
 nusersync = "yourname" # AnodyneWiki usersync user name
@@ -173,4 +173,4 @@ The "Statistics" action offers Daily, Weekly, Monthly, Yearly, and Total views. 
 
 ## Ingestion CSV format
 
-Columns: `timestamp, user, substance, dosage, roa, site, salt, note`
+The file is created with the header row `timestamp,user,med,amount,ROA,comment` when it does not exist. Columns: `timestamp, user, substance, dosage, roa, site, salt, note`

@@ -39,6 +39,8 @@ STASH_CACHE_FILE = app_dir / "stash.json"
 STASH_CACHE_VERSION = 1
 WEBHOOK_MESSAGE_CACHE_FILE = app_dir / "webhook-messages.json"
 USERPAGE_CACHE_FILE = app_dir / "userpage.json"
+DEFAULT_LOGFILE = app_dir / "logs.csv"
+LOG_HEADER = ["timestamp", "user", "med", "amount", "ROA", "comment"]
 USERSYNC_URL_TEMPLATE = "https://anodyne.wiki/api/usersync/{name}"
 USERSYNC_CREDENTIALS: tuple[str, str] | None = None
 ANODYNE_USERPAGE_RE = re.compile(r"^(?P<base>https?://anodyne\.wiki)/user/(?P<name>[^/?#]+)/?(?:[?#].*)?$")
@@ -322,7 +324,7 @@ class LogKind(str, Enum):
 class LogConfig(BaseModel):
     user: str | None = None
     userpage: str | None = None
-    logfile: Path | None = None
+    logfile: Path | None = DEFAULT_LOGFILE
     webhook: HttpUrl | None = None
     nusersync: str | None = None
     pusersync: str | None = None
@@ -5647,6 +5649,20 @@ def _collect_input(
                             )
 
 
+def _ensure_logfile(logfile: Path | None) -> None:
+    """Create the CSV log with its header row when it does not exist yet."""
+    if logfile is None or logfile.exists():
+        return
+    try:
+        logfile.parent.mkdir(parents=True, exist_ok=True)
+        with open(logfile, "w", newline="") as outfile:
+            csv.writer(outfile).writerow(LOG_HEADER)
+    except OSError as exc:
+        err_con.print(f"Could not create {logfile}: '{exc}'", style="bold yellow")
+        return
+    con.print(f"File '{logfile}' has been created.")
+
+
 def _require_option(label: str, value):
     if value is None:
         raise typer.BadParameter(f"Missing required option: {label}")
@@ -5927,6 +5943,7 @@ def log_ingestion(
     logfile: Annotated[Path | None, typer.Option(
         "--csv",
         help="File to write logs to",
+        show_default=str(DEFAULT_LOGFILE),
         rich_help_panel="Configuration Options"
     )] = None,
     user: Annotated[str | None, typer.Option(
@@ -5985,6 +6002,7 @@ def log_ingestion(
     USERSYNC_CREDENTIALS = (nusersync, pusersync) if nusersync and pusersync else None
     MENU_ICON_COLOR = menu_icon_color.strip()
     _ensure_userpage_cache(userpage)
+    _ensure_logfile(logfile)
     if fuzzel_mode and menu_tool is not None:
         raise typer.BadParameter("Choose only one input mode")
     MENU_TOOL_COMMAND = _parse_menu_tool(FUZZEL_MENU_TOOL if fuzzel_mode else menu_tool)
@@ -6164,10 +6182,7 @@ def log_ingestion(
         is_backdated = datetime.now(timezone.utc) - ingestion_time > timedelta(minutes=10)
         title = substance_md = substance
 
-        if not logfile.exists():
-            logfile.parent.mkdir(parents=True, exist_ok=True)
-            logfile.touch()
-            con.print(f"File '{logfile}' has been created.")
+        _ensure_logfile(logfile)
 
         if mode == InputMode.prompt:
             accept_mode = "confirm"
