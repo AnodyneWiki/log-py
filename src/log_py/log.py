@@ -4495,7 +4495,25 @@ def _prompt_history_page(mode: InputMode, page_number: int, page_count: int) -> 
     return target
 
 
-def _journal_ingestion_to_row(ingestion: dict, user: str) -> list[str] | None:
+def _journal_substance_title(name: str, titles: dict[str, str]) -> str:
+    """The AnodyneWiki title for a Journal substance name: from the local
+    substance cache when known, else from the API (cached), else the name."""
+    key = _alias_key(name)
+    if key in titles:
+        return titles[key]
+    title = _resolve_cached_substance_title(name)
+    if title is None:
+        entry, _ = _fetch_substance_entry_result(name)
+        if entry:
+            _cache_substance_entry(entry)
+            fetched = entry.get("Title")
+            title = fetched if isinstance(fetched, str) and fetched else None
+    titles[key] = title or name
+    con.print(f"{name} -> {titles[key]}" if title else f"{name} (not found on AnodyneWiki, kept as is)")
+    return titles[key]
+
+
+def _journal_ingestion_to_row(ingestion: dict, user: str, titles: dict[str, str] | None = None) -> list[str] | None:
     """Convert one PsychonautWiki Journal ingestion to a logpy CSV row."""
     raw_time = ingestion.get("time")
     if not isinstance(raw_time, (int, float)):
@@ -4504,7 +4522,8 @@ def _journal_ingestion_to_row(ingestion: dict, user: str) -> list[str] | None:
     name = ingestion.get("substanceName")
     if not isinstance(name, str) or not name.strip():
         return None
-    name = _resolve_alias(name.strip(), SUBSTANCE_ALIASES) or name.strip()
+    name = name.strip()
+    name = _journal_substance_title(name, titles) if titles is not None else (_resolve_alias(name, SUBSTANCE_ALIASES) or name)
     dose = ingestion.get("dose")
     units = ingestion.get("units") if isinstance(ingestion.get("units"), str) else ""
     if isinstance(dose, (int, float)) and not isinstance(dose, bool):
@@ -4537,10 +4556,13 @@ def _import_journal_export(logfile: Path, path: Path, user: str) -> None:
     body = rows[len(header):]
     existing = {(_padded_log_row(row)[0], _alias_key(_padded_log_row(row)[2])) for row in body}
     imported = skipped = unreadable = 0
+    titles: dict[str, str] = {}
+    _merge_cached_substance_aliases()
+    con.print("Resolving substance titles on AnodyneWiki...")
     for experience in experiences:
         ingestions = experience.get("ingestions") if isinstance(experience, dict) else None
         for ingestion in ingestions if isinstance(ingestions, list) else []:
-            row = _journal_ingestion_to_row(ingestion, user) if isinstance(ingestion, dict) else None
+            row = _journal_ingestion_to_row(ingestion, user, titles) if isinstance(ingestion, dict) else None
             if row is None:
                 unreadable += 1
                 continue
