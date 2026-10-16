@@ -4177,7 +4177,7 @@ def _plain_logged_dosage(dosage: str) -> str:
     return _strip_dosage_guess_marker(_dosage_without_volume(dosage)) or dosage.strip()
 
 
-def _update_userpage_tried_substance(title: str, dosage: str, roa: str) -> None:
+def _update_userpage_tried_substance(title: str, dosage: str, roa: str, salt: str | None = None) -> None:
     """Keep the userpage's TriedSubstances in step with a logged ingestion.
 
     For each logged component: find (or add) its TriedSubstances entry, find
@@ -4200,9 +4200,11 @@ def _update_userpage_tried_substance(title: str, dosage: str, roa: str) -> None:
 
     names = _split_mixture_values(title) or [title]
     doses = _split_mixture_values(_dosage_without_volume(dosage)) or [dosage]
+    salts = _split_mixture_values(salt) if salt else []
+    salts = [*salts, *([""] * (len(names) - len(salts)))]
     route_name = _format_route_for_log(roa) or roa.strip().casefold()
     changes = []
-    for name, dose in zip(names, doses):
+    for name, dose, row_salt in zip(names, doses, salts):
         name = (_resolve_alias(name, SUBSTANCE_ALIASES) or name).strip()
         if not name or _is_skip_choice(name) or _alias_key(name) == _alias_key(UNKNOWN_SUBSTANCE_TITLE):
             continue
@@ -4216,6 +4218,18 @@ def _update_userpage_tried_substance(title: str, dosage: str, roa: str) -> None:
             entry = {JSON_NAME_KEY: name, USERPAGE_ROUTES_KEY: []}
             tried.append(entry)
             changes.append(f"added {name}")
+        row_salt = (row_salt or "").strip()
+        if row_salt and _alias_key(row_salt) != "unknown" and not _is_skip_choice(row_salt):
+            entry_salts = entry.get("Salts")
+            if entry_salts is None:
+                entry_salts = entry["Salts"] = []
+            if isinstance(entry_salts, list) and not any(
+                isinstance(item, str) and _alias_key(_resolve_alias(item, SALT_ALIASES) or item)
+                == _alias_key(_resolve_alias(row_salt, SALT_ALIASES) or row_salt)
+                for item in entry_salts
+            ):
+                entry_salts.append(row_salt)
+                changes.append(f"{name}: added salt {row_salt}")
         routes = entry.get(USERPAGE_ROUTES_KEY)
         if routes is None:
             routes = entry[USERPAGE_ROUTES_KEY] = []
@@ -5920,7 +5934,7 @@ def log_ingestion(
         _print_supply_updates("Used supply", _decrement_logged_supplies(note))
         _print_stash_updates("Used stash", _decrement_logged_stash(title, dosage))
         if userpage:
-            _update_userpage_tried_substance(title, dosage, roa)
+            _update_userpage_tried_substance(title, dosage, roa, salt)
 
         logline = _format_logline(
             user, userpage, kind, dosage, substance_md, salt, roa, logged_site, note, time_now, is_backdated
