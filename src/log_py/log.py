@@ -3030,6 +3030,18 @@ def _empty_stats_period() -> dict[str, object]:
     }
 
 
+def _total_weight_grams(amounts: dict[str, Decimal]) -> Decimal:
+    grams = Decimal("0")
+    for unit, amount in amounts.items():
+        if unit == "mg":
+            grams += amount / Decimal("1000")
+        elif unit == "ug":
+            grams += amount / Decimal("1000000")
+        elif unit == "g":
+            grams += amount
+    return grams
+
+
 def _format_total_amount(amounts: dict[str, Decimal]) -> str:
     parts = []
     grams = Decimal("0")
@@ -3112,10 +3124,11 @@ def _statistics_substance_lines(period: dict[str, object]) -> list[str]:
         if not isinstance(value, dict):
             continue
         ingestions = int(value.get("ingestions", 0))
-        amounts = value.get("amounts")
-        total = _format_total_amount(amounts if isinstance(amounts, dict) else {})
-        rows.append((ingestions, substance, f"{substance} (total: {total}, ingestions: {ingestions})"))
-    return [row[2] for row in sorted(rows, key=lambda row: (-row[0], row[1].casefold()))]
+        amounts = value.get("amounts") if isinstance(value.get("amounts"), dict) else {}
+        total = _format_total_amount(amounts)
+        rows.append((_total_weight_grams(amounts), ingestions, substance, f"{substance} (total: {total}, ingestions: {ingestions})"))
+    # Heaviest total first; ingestion count and name break ties.
+    return [row[3] for row in sorted(rows, key=lambda row: (-row[0], -row[1], row[2].casefold()))]
 
 
 def _format_total_amount_mg(amounts: dict[str, Decimal]) -> str:
