@@ -279,7 +279,7 @@ DAILY_USAGE_TODAY = "today"
 MENU_MOUSE_ENABLED = True
 MENU_TOOL_COMMAND: list[str] = []
 MENU_PROMPT_PLACEHOLDER = "{prompt}"
-FUZZEL_MENU_TOOL = "fuzzel --dmenu"
+FUZZEL_MENU_TOOL = "fuzzel -d -f Monospace-8 --use-bold -w 90 -l 25 -x 5 -y 5 --no-exit-on-keyboard-focus-loss --keyboard-focus=exclusive --no-mouse -b 101418ff -t a799cdff --prompt-color=ffffffff --input-color=ff00ffff --selection-color=080a0cff --selection-text-color=a99acfff --selection-match-color=ff00ffff --border-color=a2a9b1ff --border-width=1 --border-radius=0"
 MENU_ICON_COLOR = "#ffffff"
 MENU_ICON_CACHE_DIR = app_dir / "icons"
 MENU_ICON_FALLBACK_THEMES = ("Adwaita", "hicolor")
