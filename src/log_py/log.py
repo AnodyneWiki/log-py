@@ -95,6 +95,8 @@ JSON_ENTRY_PREFIX = "entry:"
 HISTORY_PAGE_SIZE = 100
 HISTORY_NEXT_CHOICE = f"Next {HISTORY_PAGE_SIZE}"
 HISTORY_GOTO_CHOICE = "Goto Page: ?"
+HISTORY_BROWSE_CHOICE = "Browse Logs"
+HISTORY_IMPORT_CHOICE = "Import Journal Export"
 HISTORY_EDIT_CHOICE = "Edit"
 HISTORY_REMOVE_CHOICE = "Remove"
 LOG_COLUMNS = ["timestamp", "user", "substance", "dosage", "roa", "site", "salt", "note"]
@@ -169,6 +171,8 @@ MENU_ICONS = {
     LEGACY_UNKNOWN_CHOICE: "dialog-question-symbolic",
     HISTORY_NEXT_CHOICE: "go-down-symbolic",
     HISTORY_GOTO_CHOICE: "go-jump-symbolic",
+    HISTORY_BROWSE_CHOICE: "view-list-symbolic",
+    HISTORY_IMPORT_CHOICE: "document-open-symbolic",
     HISTORY_EDIT_CHOICE: "document-edit-symbolic",
     HISTORY_REMOVE_CHOICE: "edit-delete-symbolic",
     SUPPLY_ACTION_ADD: "list-add-symbolic",
@@ -4445,6 +4449,99 @@ def _prompt_history_page(mode: InputMode, page_number: int, page_count: int) -> 
     return target
 
 
+def _journal_ingestion_to_row(ingestion: dict, user: str) -> list[str] | None:
+    """Convert one PsychonautWiki Journal ingestion to a logpy CSV row."""
+    raw_time = ingestion.get("time")
+    if not isinstance(raw_time, (int, float)):
+        return None
+    timestamp = datetime.fromtimestamp(raw_time / 1000, tz=timezone.utc).isoformat(timespec="milliseconds")
+    name = ingestion.get("substanceName")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    name = _resolve_alias(name.strip(), SUBSTANCE_ALIASES) or name.strip()
+    dose = ingestion.get("dose")
+    units = ingestion.get("units") if isinstance(ingestion.get("units"), str) else ""
+    if isinstance(dose, (int, float)) and not isinstance(dose, bool):
+        dosage = f"{_format_decimal(Decimal(str(dose)))}{units.strip()}"
+        if ingestion.get("isDoseAnEstimate"):
+            dosage = _mark_guess_dosage(dosage)
+    else:
+        dosage = "unknown"
+    route_raw = ingestion.get("administrationRoute")
+    route_text = route_raw.strip().casefold().replace("_", " ") if isinstance(route_raw, str) else ""
+    roa = _format_route_for_log(route_text) or route_text
+    notes = ingestion.get("notes")
+    note = notes.strip() if isinstance(notes, str) else ""
+    return [timestamp, user, name, dosage, roa, "", "", note]
+
+
+def _import_journal_export(logfile: Path, path: Path, user: str) -> None:
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        err_con.print(f"Could not read {path}: {exc}", style="bold yellow")
+        return
+    experiences = data.get("experiences") if isinstance(data, dict) else None
+    if not isinstance(experiences, list):
+        err_con.print(f"{path} has no \"experiences\" array", style="bold yellow")
+        return
+
+    rows = _read_log_rows(logfile)
+    header = [rows[0]] if rows and _is_log_header_row(rows[0]) else []
+    body = rows[len(header):]
+    existing = {(_padded_log_row(row)[0], _alias_key(_padded_log_row(row)[2])) for row in body}
+    imported = skipped = unreadable = 0
+    for experience in experiences:
+        ingestions = experience.get("ingestions") if isinstance(experience, dict) else None
+        for ingestion in ingestions if isinstance(ingestions, list) else []:
+            row = _journal_ingestion_to_row(ingestion, user) if isinstance(ingestion, dict) else None
+            if row is None:
+                unreadable += 1
+                continue
+            key = (row[0], _alias_key(row[2]))
+            if key in existing:
+                skipped += 1
+                continue
+            existing.add(key)
+            body.append(row)
+            imported += 1
+    if imported:
+        body.sort(key=lambda row: _parse_log_timestamp(_padded_log_row(row)[0]) or datetime.min.replace(tzinfo=timezone.utc))
+        _write_log_rows(logfile, [*header, *body])
+    con.print(f"Imported {imported} ingestions from {path} ({skipped} already logged, {unreadable} unreadable).")
+
+
+def _prompt_import_path(mode: InputMode) -> Path | None:
+    label = "Journal export (.json) path"
+    if mode == InputMode.prompt:
+        text = _prompt_for_value(label, None, optional=True)
+    else:
+        text = _menu_for_value(mode.value, label, None, candidates=[BACK_CHOICE], optional=True)
+    if not text or _alias_key(text) == _alias_key(BACK_CHOICE):
+        return None
+    path = Path(text.strip()).expanduser()
+    if not path.is_file():
+        err_con.print(f"{path} is not a file", style="bold yellow")
+        return None
+    return path
+
+
+def _history_menu(mode: InputMode, logfile: Path, webhook: HttpUrl | None, userpage: str | None, user: str | None) -> None:
+    while True:
+        choice = _select_statistics_choice(mode, ACTION_HISTORY, [HISTORY_BROWSE_CHOICE, HISTORY_IMPORT_CHOICE])
+        if choice == BACK_CHOICE:
+            return
+        if choice == HISTORY_BROWSE_CHOICE:
+            _show_history(mode, logfile, webhook, userpage)
+            continue
+        if choice == HISTORY_IMPORT_CHOICE:
+            path = _prompt_import_path(mode)
+            if path is not None:
+                _import_journal_export(logfile, path, _require_option("--user", user))
+            continue
+        raise typer.BadParameter(f"Unknown history choice: {choice}")
+
+
 def _show_history(mode: InputMode, logfile: Path, webhook: HttpUrl | None, userpage: str | None) -> None:
     offset = 0
     while True:
@@ -5874,7 +5971,7 @@ def log_ingestion(
             _userpage_menu(mode, userpage, logfile)
             return False
         if action == ACTION_HISTORY:
-            _show_history(mode, _require_option("--csv", logfile), webhook, userpage)
+            _history_menu(mode, _require_option("--csv", logfile), webhook, userpage, user)
             return False
         if action != ACTION_LOG_INGESTION:
             raise typer.BadParameter(f"Unknown action: {action}")
