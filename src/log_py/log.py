@@ -53,6 +53,7 @@ UNKNOWN_GAUGE_CHOICE = SKIP_CHOICE
 UNKNOWN_LENGTH_CHOICE = SKIP_CHOICE
 EMPTY_NOTE_CHOICE = "No note"
 NOW_TIME_CHOICE = "now"
+CUSTOM_TIME_CHOICE = "Custom time"
 BACK_CHOICE = "Back"
 MENU_CUSTOM_PREFIX = "~"
 ACTION_LOG_INGESTION = "Add ingestion"
@@ -185,6 +186,7 @@ MENU_ICONS = {
     "No": "window-close-symbolic",
     EMPTY_NOTE_CHOICE: "edit-clear-symbolic",
     NOW_TIME_CHOICE: "alarm-symbolic",
+    CUSTOM_TIME_CHOICE: "document-edit-symbolic",
 }
 STATISTICS_TIMESCALE_DAILY = "Daily"
 STATISTICS_TIMESCALE_WEEKLY = "Weekly"
@@ -3034,12 +3036,33 @@ def _menu_for_time_details(
             executable,
             "Minutes ago",
             NOW_TIME_CHOICE,
-            candidates=[NOW_TIME_CHOICE, *TIME_CHOICES],
+            candidates=[NOW_TIME_CHOICE, *TIME_CHOICES, CUSTOM_TIME_CHOICE],
             optional=True,
             allow_back=allow_back,
         )
         if minutes_ago and _alias_key(minutes_ago) == _alias_key(NOW_TIME_CHOICE):
             return time
+        if minutes_ago == CUSTOM_TIME_CHOICE:
+            # Free text with no preset entries, so "3 minutes ago" cannot be
+            # matched to "30 minutes ago" by the menu tool. Only Back is listed.
+            try:
+                custom = _menu_for_value(
+                    executable,
+                    "Minutes ago (e.g. 3, 3 minutes ago, 2 hours ago, 2025-12-04 10:00)",
+                    None,
+                    candidates=[BACK_CHOICE],
+                    allow_back=False,
+                    optional=True,
+                )
+            except BackRequested:
+                continue
+            if custom is None or _alias_key(custom) == _alias_key(BACK_CHOICE):
+                continue
+            try:
+                formatted_custom = _format_minutes_ago_input(custom)
+            except typer.BadParameter:
+                formatted_custom = None
+            return formatted_custom or custom.strip()
         formatted_minutes_ago = _format_minutes_ago_input(minutes_ago)
         if formatted_minutes_ago:
             return formatted_minutes_ago

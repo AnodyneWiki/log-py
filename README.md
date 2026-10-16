@@ -115,6 +115,8 @@ logpy --menu-tool "fuzzel --dmenu --prompt={prompt}"
 
 In fuzzel mode the choices carry icons from fuzzel's configured icon theme (`--icon-theme` on its command line, else `icon-theme` in `fuzzel.ini`, else hicolor). Because symbolic theme icons have a fixed dark fill, logpy copies each icon to `~/.config/logpy/icons/` with the fill replaced by `--menu-icon-color`, white by default, and hands fuzzel that copy. Pass an empty colour to use the theme icons as they are.
 
+Menu tools select the best matching entry when Enter is pressed, so typed text that resembles an entry (such as `3 minutes ago` next to `30 minutes ago`) selects that entry. Pick "Custom time" in the "Minutes ago" menu to type a value freely, or prefix typed text with `~` to force it in any menu (dmenu and fuzzel also output the raw input on Shift+Enter).
+
 `--menu-tool` runs the given command for every selection, feeding the choices on stdin and reading the chosen line from stdout. `{prompt}` anywhere in the command is replaced by the prompt text; without it, `-p <prompt>` is appended, which dmenu, bemenu, rofi, and wofi understand.
 
 The main action menu also offers a "History" entry. It lists the newest 100 logged ingestions, with a "Next 100" choice at the end for older pages and a "Goto Page: ?" choice that asks for a page number to jump to. Selecting an entry offers "Edit", which changes one field of that row at a time, and "Remove", which deletes the row. Both rewrite the CSV in place and rebuild the cached menu choices from the remaining rows, so a substance, dosage, or salt that no longer appears in any row stops being suggested. This is a local read of the CSV; the AnodyneWiki lookups of `--sync-choices` are not repeated.
