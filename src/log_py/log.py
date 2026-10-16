@@ -2,14 +2,17 @@ import csv
 import ast
 import dateparser
 import io
+import functools
 import json
+import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from enum import Enum
 from pathlib import Path
 from typing import Annotated
@@ -20,7 +23,51 @@ from pydantic import BaseModel, HttpUrl, field_validator
 from typer_config import toml_loader, conf_callback_factory
 from rich.console import Console
 
+from log_py.effects import IE_EFFECTS
 from log_py.salts import SALT_ALIASES, SALT_CHOICES
+from log_py.plot import DEFAULT_MAIN_FONT, Ingestion, PlotError, parse_font, plot_plasma_concentrations
+from log_py import menu
+from log_py.menu import (
+    BACK_CHOICE,
+    BackRequested,
+    EXTRA_INFO_ALIASES,
+    FUZZEL_MENU_TOOL,
+    ICON_COLOR_RE,
+    InputMode,
+    MENU_CUSTOM_PREFIX,
+    MENU_ICON_CACHE_DIR,
+    MENU_ICON_FALLBACK_THEMES,
+    MENU_PROMPT_PLACEHOLDER,
+    MENU_WIDTH_FACTOR,
+    _alias_key,
+    _alias_lookup,
+    _choice_label,
+    _confirm_choice,
+    _find_theme_icon,
+    _fuzzel_icon_theme,
+    _icon_base_dirs,
+    _interactive_choice,
+    _invalidate_alias_lookups,
+    _menu_candidates,
+    _menu_entry_with_icon,
+    _menu_for_value,
+    _menu_icons_enabled,
+    _menu_tool_command,
+    _menu_tool_is_fuzzel,
+    _parse_menu_tool,
+    _print_prompt_choices,
+    _prompt_for_value,
+    _prompt_free_text,
+    _prompt_mode_choice,
+    _recolored_icon,
+    _resolve_alias,
+    _select_statistics_choice,
+    _strip_base_menu_choice_marker,
+    _theme_dir_icons,
+    _theme_inherits,
+    MENU_ICONS,
+    register_alias_table,
+)
 
 con = Console()
 err_con = Console(stderr=True)
@@ -34,11 +81,17 @@ SUPPLY_CACHE_VERSION = 1
 STASH_CACHE_FILE = app_dir / "stash.json"
 STASH_CACHE_VERSION = 1
 WEBHOOK_MESSAGE_CACHE_FILE = app_dir / "webhook-messages.json"
+USERPAGE_CACHE_FILE = app_dir / "userpage.json"
+DEFAULT_LOGFILE = app_dir / "logs.csv"
+LOG_HEADER = ["timestamp", "user", "med", "amount", "ROA", "comment"]
+USERSYNC_URL_TEMPLATE = "https://anodyne.wiki/api/usersync/{name}"
+USERSYNC_CREDENTIALS: tuple[str, str] | None = None
+ANODYNE_USERPAGE_RE = re.compile(r"^(?P<base>https?://anodyne\.wiki)/user/(?P<name>[^/?#]+)/?(?:[?#].*)?$")
 WEBHOOK_MESSAGE_CACHE_VERSION = 1
 SKIP_CHOICE = "Skip"
 LEGACY_UNKNOWN_CHOICE = "Unknown"
 UNKNOWN_SUBSTANCE_TITLE = "Unknown"
-DONE_SUBSTANCE_CHOICE = ">"
+DONE_SUBSTANCE_CHOICE = "Done"
 UNKNOWN_SUBSTANCE_CHOICE = LEGACY_UNKNOWN_CHOICE
 UNKNOWN_SITE_CHOICE = SKIP_CHOICE
 UNKNOWN_VOLUME_CHOICE = SKIP_CHOICE
@@ -46,16 +99,61 @@ UNKNOWN_GAUGE_CHOICE = SKIP_CHOICE
 UNKNOWN_LENGTH_CHOICE = SKIP_CHOICE
 EMPTY_NOTE_CHOICE = "No note"
 NOW_TIME_CHOICE = "now"
-BACK_CHOICE = "<"
-MENU_CUSTOM_PREFIX = "~"
+CUSTOM_TIME_CHOICE = "Custom time"
 ACTION_LOG_INGESTION = "Add ingestion"
 ACTION_EDIT_SUPPLY_STACK = "Supplies"
 ACTION_EDIT_STASH = "Stash"
 ACTION_SETTINGS = "Settings"
 ACTION_STATISTICS = "Statistics"
 ACTION_HISTORY = "History"
+ACTION_USERPAGE = "Userpage"
+ACTION_PLOT = "Plot"
+USERPAGE_ADD_KEY_CHOICE = "Add key"
+USERPAGE_ADD_ITEM_CHOICE = "Add item"
+USERPAGE_REMOVE_CHOICE = "Remove"
+USERPAGE_MOVE_CHOICE = "Move"
+USERPAGE_CLOSE_CHOICE = "Back"
+USERPAGE_RESET_CHOICE = "Reset userpage to upstream"
+USERPAGE_ANNOTATE_CHOICE = "Add annotations"
+USERPAGE_MANUAL_CHOICE = "Manually edit userpage"
+JSON_NAME_KEY = "Name"
+JSON_MISSING_PREFIX = "missing:"
+USERPAGE_SUBSTANCES_KEY = "Substances"
+USERPAGE_LEGACY_KEYS = {"TriedSubstances": "Substances", "RoutesOfAdministration": "Routes"}
+USERPAGE_ROUTES_KEY = "Routes"
+USERPAGE_ROUTE_FIELDS = ["Name", "Dosage", "Onset", "Comeup", "Duration", "Aftereffectduration"]
+ANNOTATION_FELT_ONSET = "Felt Onset"
+ANNOTATION_FELT_COMEUP = "Felt Comeup"
+ANNOTATION_FELT_COMEDOWN = "Felt Comedown"
+ANNOTATION_FELT_OVER = "Felt Over"
+ANNOTATION_FELT_EFFECT = "Felt Effect"
+ANNOTATION_ROUTE_FIELDS = {
+    ANNOTATION_FELT_ONSET: "Onset",
+    ANNOTATION_FELT_COMEUP: "Comeup",
+    ANNOTATION_FELT_COMEDOWN: "Duration",
+    ANNOTATION_FELT_OVER: "Aftereffectduration",
+}
+ANNOTATION_RECENT_COUNT = 100
+USERPAGE_SUBSTANCE_LIST_FIELDS = [
+    "Classes", "Salts", "Sources", "Indication", "Tolerance", "Effects", "After", "Odor", "Notes",
+]
+JSON_ENTRY_PREFIX = "entry:"
 HISTORY_PAGE_SIZE = 100
 HISTORY_NEXT_CHOICE = f"Next {HISTORY_PAGE_SIZE}"
+HISTORY_GOTO_CHOICE = "Goto Page: ?"
+HISTORY_BROWSE_CHOICE = "Browse Logs"
+HISTORY_IMPORT_CHOICE = "Import Journal Export"
+HISTORY_WIPE_CHOICE = "Wipe logs"
+EFFECT_SEVERITY_CHOICES = [
+    ("Unknown", ""),
+    ("Light Severity", "{sev 'light'}"),
+    ("Moderate Severity", "{sev 'moderate'}"),
+    ("Strong Severity", "{sev 'strong'}"),
+    ("Intense Severity", "{sev 'intense'}"),
+]
+EFFECT_REF_UNREFERENCED = "unreferenced effect"
+EFFECT_REF_INDEX = "effect index effect"
+EFFECT_REF_WIKIPEDIA = "wikipedia ref to effect"
 HISTORY_EDIT_CHOICE = "Edit"
 HISTORY_REMOVE_CHOICE = "Remove"
 LOG_COLUMNS = ["timestamp", "user", "substance", "dosage", "roa", "site", "salt", "note"]
@@ -87,10 +185,6 @@ ROA_ALIASES = {
     "transdermal": ["td", "topical"],
 }
 UNIT_CHOICES = ["mg", "ug", "mcg", "g", "ml"]
-EXTRA_INFO_ALIASES = {
-    "No": ["n"],
-    "Yes": ["y"],
-}
 EXTRA_INFO_SKIP_CHOICE = "Skip"
 EXTRA_INFO_SHOW_CHOICE = "Show"
 EXTRA_INFO_CHOICE_ALIASES = {
@@ -104,11 +198,79 @@ ACTION_ALIASES = {
     ACTION_SETTINGS: ["settings", "config", "preferences"],
     ACTION_STATISTICS: ["statistics", "stats"],
     ACTION_HISTORY: ["history", "logs"],
+    ACTION_USERPAGE: ["userpage", "profile"],
+    ACTION_PLOT: ["plot", "graph", "chart"],
 }
-STATISTICS_TIMESCALE_DAILY = "daily"
-STATISTICS_TIMESCALE_WEEKLY = "weekly"
-STATISTICS_TIMESCALE_MONTHLY = "monthly"
-STATISTICS_TIMESCALE_TOTAL = "total"
+
+PLOT_RANGE_DAY = "Last 24 hours"
+PLOT_RANGE_THREE_DAYS = "Last 3 days"
+PLOT_RANGE_WEEK = "Last week"
+PLOT_RANGE_MONTH = "Last month"
+PLOT_RANGE_YEAR = "Last year"
+PLOT_RANGE_ALL = "All time"
+PLOT_RANGE_CUSTOM = "Custom range"
+PLOT_RANGE_DELTAS = {
+    PLOT_RANGE_DAY: timedelta(days=1),
+    PLOT_RANGE_THREE_DAYS: timedelta(days=3),
+    PLOT_RANGE_WEEK: timedelta(weeks=1),
+    PLOT_RANGE_MONTH: timedelta(days=30),
+    PLOT_RANGE_YEAR: timedelta(days=365),
+}
+PLOT_FILE = app_dir / "plot.png"
+DEFAULT_PLOT_VIEWER = "xdg-open"
+
+# Icon names attached to menu choices in fuzzel mode. They are freedesktop icon
+# names, resolved by fuzzel through its configured icon theme.
+MENU_ICONS.update({
+    ACTION_LOG_INGESTION: "list-add-symbolic",
+    ACTION_EDIT_SUPPLY_STACK: "applications-science-symbolic",
+    ACTION_EDIT_STASH: "package-x-generic-symbolic",
+    ACTION_HISTORY: "document-open-recent-symbolic",
+    ACTION_USERPAGE: "avatar-default-symbolic",
+    USERPAGE_ADD_KEY_CHOICE: "list-add-symbolic",
+    USERPAGE_ADD_ITEM_CHOICE: "list-add-symbolic",
+    USERPAGE_MOVE_CHOICE: "go-jump-symbolic",
+    USERPAGE_CLOSE_CHOICE: "window-close-symbolic",
+    USERPAGE_RESET_CHOICE: "view-refresh-symbolic",
+    USERPAGE_ANNOTATE_CHOICE: "list-add-symbolic",
+    USERPAGE_MANUAL_CHOICE: "document-edit-symbolic",
+    ACTION_STATISTICS: "x-office-spreadsheet-symbolic",
+    ACTION_PLOT: "image-x-generic-symbolic",
+    PLOT_RANGE_CUSTOM: "document-edit-symbolic",
+    ACTION_SETTINGS: "emblem-system-symbolic",
+    BACK_CHOICE: "go-previous-symbolic",
+    DONE_SUBSTANCE_CHOICE: "go-next-symbolic",
+    SKIP_CHOICE: "go-jump-symbolic",
+    LEGACY_UNKNOWN_CHOICE: "dialog-question-symbolic",
+    HISTORY_NEXT_CHOICE: "go-down-symbolic",
+    HISTORY_GOTO_CHOICE: "go-jump-symbolic",
+    HISTORY_BROWSE_CHOICE: "view-list-symbolic",
+    HISTORY_IMPORT_CHOICE: "document-open-symbolic",
+    HISTORY_WIPE_CHOICE: "edit-delete-symbolic",
+    HISTORY_EDIT_CHOICE: "document-edit-symbolic",
+    HISTORY_REMOVE_CHOICE: "edit-delete-symbolic",
+    SUPPLY_ACTION_ADD: "list-add-symbolic",
+    SUPPLY_ACTION_REMOVE: "list-remove-symbolic",
+    SUPPLY_ACTION_ADD_NEW: "document-new-symbolic",
+    SUPPLY_ACTION_ADD_SYRINGE: "list-add-symbolic",
+    SUPPLY_ACTION_ADD_NEEDLE: "list-add-symbolic",
+    SUPPLY_ACTION_SPECIFY_NEW_SYRINGE: "document-new-symbolic",
+    SUPPLY_ACTION_SPECIFY_NEW_NEEDLE: "document-new-symbolic",
+    SUPPLY_ACTION_REUSE_SYRINGE: "view-refresh-symbolic",
+    SUPPLY_ACTION_REUSE_NEEDLE: "view-refresh-symbolic",
+    EXTRA_INFO_SKIP_CHOICE: "go-jump-symbolic",
+    EXTRA_INFO_SHOW_CHOICE: "view-more-symbolic",
+    "Yes": "emblem-ok-symbolic",
+    "No": "window-close-symbolic",
+    EMPTY_NOTE_CHOICE: "edit-clear-symbolic",
+    NOW_TIME_CHOICE: "alarm-symbolic",
+    CUSTOM_TIME_CHOICE: "document-edit-symbolic",
+})
+STATISTICS_TIMESCALE_DAILY = "Daily"
+STATISTICS_TIMESCALE_WEEKLY = "Weekly"
+STATISTICS_TIMESCALE_MONTHLY = "Monthly"
+STATISTICS_TIMESCALE_YEARLY = "Yearly"
+STATISTICS_TIMESCALE_TOTAL = "Total"
 STATISTICS_SECTION_SUBSTANCES = "Substances"
 STATISTICS_SECTION_ROUTES = "Routes of Administration"
 SUPPLY_ACTION_ALIASES = {
@@ -172,13 +334,11 @@ IV_SITE_WIKIPEDIA_ARTICLES = {
     "dorsal-venous-arch": "Dorsal_venous_arch_of_the_foot",
     "great-saphenous": "Great_saphenous_vein",
 }
-MENU_WIDTH_FACTOR = "0.75"
 DAILY_USAGE_TODAY = "today"
-MENU_MOUSE_ENABLED = True
 
 
-class BackRequested(Exception):
-    pass
+class IngestionCancelled(Exception):
+    """Raised when the user backs out of an ingestion started from the main menu."""
 
 
 def _normalize_optional_daily_usage_arg(argv: list[str]) -> None:
@@ -192,14 +352,6 @@ def _normalize_optional_daily_usage_arg(argv: list[str]) -> None:
 _normalize_optional_daily_usage_arg(sys.argv)
 
 
-class InputMode(str, Enum):
-    flags = "flags"
-    prompt = "prompt"
-    dmenu = "dmenu"
-    bemenu = "bemenu"
-    # fuzzel = "fuzzel"
-
-
 class LogKind(str, Enum):
     single = "single"
     solution = "solution"
@@ -209,10 +361,13 @@ class LogKind(str, Enum):
 class LogConfig(BaseModel):
     user: str | None = None
     userpage: str | None = None
-    logfile: Path | None = None
+    logfile: Path | None = DEFAULT_LOGFILE
     webhook: HttpUrl | None = None
+    nusersync: str | None = None
+    pusersync: str | None = None
     mouse: bool = True
     notify: bool = False
+    plotviewer: str | None = None
 
     @field_validator("logfile", mode="after")
     def valiadte_path(cls, logfile: Path):
@@ -289,6 +444,7 @@ def _merge_cached_substance_aliases(cache: dict[str, dict[str, object]] | None =
             title,
             [*existing_aliases, *_cached_abbreviations(entry)],
         )
+    _invalidate_alias_lookups()
 
 
 def _normalize_api_abbreviations(value) -> list[str]:
@@ -319,6 +475,52 @@ def _fetch_substance_entry_result(substance: str) -> tuple[dict[str, object] | N
         "Abbreviation": _unique_aliases(title, _normalize_api_abbreviations(data.get("Abbreviation"))),
         "synced_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }, False
+
+
+def _anodyne_userpage_api_url(userpage: str | None) -> str | None:
+    """Map an AnodyneWiki user page URL to its API URL, else None."""
+    if not userpage:
+        return None
+    match = ANODYNE_USERPAGE_RE.match(userpage.strip())
+    if not match:
+        return None
+    return f"{match.group('base')}/api/user/{match.group('name')}"
+
+
+def _download_userpage(userpage: str | None) -> bool:
+    """Download the AnodyneWiki user API document over userpage.json.
+    Returns True when the file was written."""
+    api_url = _anodyne_userpage_api_url(userpage)
+    if not api_url:
+        err_con.print("Userpage is not an anodyne.wiki user page; nothing to download", style="bold yellow")
+        return False
+    try:
+        response = requests.get(api_url, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+    except Exception as exc:
+        err_con.print(f"Userpage download failed: '{exc}'", style="bold yellow")
+        return False
+    _migrate_userpage(data)
+    try:
+        USERPAGE_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmpfile = USERPAGE_CACHE_FILE.with_suffix(f"{USERPAGE_CACHE_FILE.suffix}.tmp")
+        with open(tmpfile, "w") as outfile:
+            json.dump(data, outfile, indent=2)
+            outfile.write("\n")
+        tmpfile.replace(USERPAGE_CACHE_FILE)
+    except OSError as exc:
+        err_con.print(f"Could not write {USERPAGE_CACHE_FILE}: '{exc}'", style="bold yellow")
+        return False
+    con.print(f"Saved userpage to {USERPAGE_CACHE_FILE}.")
+    return True
+
+
+def _ensure_userpage_cache(userpage: str | None) -> None:
+    """Download the AnodyneWiki user API document to userpage.json once."""
+    if USERPAGE_CACHE_FILE.exists() or not _anodyne_userpage_api_url(userpage):
+        return
+    _download_userpage(userpage)
 
 
 def _fetch_substance_entry(substance: str) -> dict[str, object] | None:
@@ -495,13 +697,15 @@ def _add_logged_choice_options(
 
 def _sync_choices_from_history(logfile: Path) -> tuple[list[str], dict[str, list[str]], list[str]]:
     _merge_cached_substance_aliases()
+    con.print(f"Scanning {logfile}...")
     substances, _, _ = _sync_choice_cache_from_history(logfile)
 
     cache = _load_substance_cache()
     changed = False
-    for substance in substances:
-        if substance in cache or _is_list_value(substance):
-            continue
+    pending = [substance for substance in substances if substance not in cache and not _is_list_value(substance)]
+    con.print(f"Found {len(substances)} substances; looking up {len(pending)} on AnodyneWiki...")
+    for index, substance in enumerate(pending, 1):
+        con.print(f"[{index}/{len(pending)}] {substance}")
         entry = _fetch_substance_entry(substance)
         if not entry:
             continue
@@ -644,7 +848,7 @@ def _parse_ingestion_time(set_time: str | None, offset_time: str | None) -> date
 
 
 def _menu_default_ingestion_time(mode: InputMode, time: str | None, offset_time: str | None, started_at: datetime) -> datetime | None:
-    if mode in (InputMode.dmenu, InputMode.bemenu) and not time and not offset_time:
+    if mode in (InputMode.dmenu, InputMode.bemenu, InputMode.menu) and not time and not offset_time:
         return started_at
     return None
 
@@ -656,12 +860,6 @@ def _coalesce(*values: str | None) -> str | None:
     return None
 
 
-def _alias_key(value: str) -> str:
-    stripped = value.strip()
-    key = "".join(char for char in stripped.casefold() if char.isalnum())
-    return key or stripped
-
-
 def _is_skip_choice(value: str | None) -> bool:
     if not value:
         return False
@@ -670,24 +868,6 @@ def _is_skip_choice(value: str | None) -> bool:
 
 def _supply_key_part(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")
-
-
-def _alias_lookup(aliases: dict[str, list[str]]) -> dict[str, str]:
-    lookup = {}
-    for canonical, variants in aliases.items():
-        lookup[_alias_key(canonical)] = canonical
-        for variant in variants:
-            lookup[_alias_key(variant)] = canonical
-    return lookup
-
-
-def _resolve_alias(value: str | None, aliases: dict[str, list[str]]) -> str | None:
-    if value is None:
-        return None
-    stripped = value.strip()
-    if not stripped:
-        return stripped
-    return _alias_lookup(aliases).get(_alias_key(stripped), stripped)
 
 
 def _is_list_value(value: str) -> bool:
@@ -708,49 +888,7 @@ def _format_route_for_log(roa: str | None) -> str | None:
     return resolved.strip().casefold()
 
 
-def _choice_label(canonical: str, aliases: dict[str, list[str]]) -> str:
-    variants = aliases.get(canonical)
-    if not variants:
-        return canonical
-    return f"{canonical} ({', '.join(variants)})"
-
-
-def _strip_base_menu_choice_marker(choice: str) -> str:
-    choice = choice.strip()
-    if choice.startswith(MENU_CUSTOM_PREFIX):
-        return choice.removeprefix(MENU_CUSTOM_PREFIX).lstrip()
-    return choice
-
-
-def _menu_candidates(
-    candidates: list[str],
-    aliases: dict[str, list[str]] | None = None,
-    labels_by_value: dict[str, str] | None = None,
-    keep_custom_prefix: bool = False,
-) -> tuple[list[str], dict[str, str]]:
-    aliases = aliases or {}
-    labels_by_value = labels_by_value or {}
-    labels = []
-    label_values = {}
-    seen = set()
-
-    for candidate in candidates:
-        if not candidate:
-            continue
-        candidate = candidate.strip() if keep_custom_prefix else _strip_base_menu_choice_marker(candidate)
-        if not candidate:
-            continue
-        canonical = _format_route_for_log(candidate) if aliases is ROA_ALIASES else None
-        canonical = canonical or _resolve_alias(candidate, aliases) or candidate
-        key = _alias_key(canonical)
-        if key in seen:
-            continue
-        seen.add(key)
-        label = labels_by_value.get(canonical) or _choice_label(canonical, aliases)
-        labels.append(label)
-        label_values[label] = canonical
-
-    return labels, label_values
+register_alias_table(ROA_ALIASES, canonicalize=_format_route_for_log, capitalize=True)
 
 
 def _resolve_input_mode(
@@ -759,6 +897,7 @@ def _resolve_input_mode(
     dmenu: bool,
     bemenu: bool,
     fuzzel: bool,
+    menu: bool = False,
 ) -> InputMode:
     selected = [
         mode
@@ -767,90 +906,13 @@ def _resolve_input_mode(
             (prompt, InputMode.prompt),
             (dmenu, InputMode.dmenu),
             (bemenu, InputMode.bemenu),
-            # (fuzzel, InputMode.fuzzel),
+            (menu, InputMode.menu),
         )
         if enabled
     ]
     if len(selected) > 1:
         raise typer.BadParameter("Choose only one input mode")
     return selected[0] if selected else InputMode.flags
-
-
-def _prompt_for_value(label: str, current: str | None = None, optional: bool = False) -> str | None:
-    value = typer.prompt(label, default=current or "", show_default=bool(current))
-    value = value.strip()
-    if value:
-        return value
-    if optional:
-        return None
-    raise typer.BadParameter(f"{label} is required")
-
-
-def _menu_for_value(
-    executable: str,
-    label: str,
-    current: str | None = None,
-    candidates: list[str] | None = None,
-    optional: bool = False,
-    aliases: dict[str, list[str]] | None = None,
-    labels_by_value: dict[str, str] | None = None,
-    allow_back: bool = False,
-    keep_custom_prefix: bool = False,
-) -> str | None:
-    if not shutil.which(executable):
-        raise typer.BadParameter(f"{executable} was not found in PATH")
-
-    menu_candidates = candidates or ([current] if current else [])
-    if allow_back:
-        menu_candidates = [*menu_candidates, BACK_CHOICE]
-    labels, label_values = _menu_candidates(menu_candidates, aliases, labels_by_value, keep_custom_prefix)
-    menu_input = "\n".join(labels)
-    if menu_input:
-        menu_input += "\n"
-    command = [executable, "-p", label]
-    if executable in (InputMode.dmenu.value, InputMode.bemenu.value):
-        command.extend(["-i", "-W", MENU_WIDTH_FACTOR])
-        if not MENU_MOUSE_ENABLED:
-            command.append("--no-cursor")
-            command.append("--single-instance")
-    # if executable == InputMode.fuzzel.value:
-    #     command = [
-    #         executable,
-    #         "--dmenu",
-    #         f"--prompt={label}",
-    #         "--match-mode=fuzzy",
-    #         "--fuzzy-min-length=1",
-    #         "--fuzzy-max-length-discrepancy=4",
-    #         "--fuzzy-max-distance=3",
-    #         "--no-cursor",
-    #     ]
-    try:
-        completed = subprocess.run(
-            command,
-            input=menu_input,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-    except OSError as exc:
-        raise typer.BadParameter(f"Could not run {executable}: {exc}") from exc
-
-    if completed.returncode == 1:
-        raise typer.Exit(0)
-    if completed.returncode != 0:
-        raise typer.BadParameter(completed.stderr.strip() or f"{executable} failed")
-
-    value = completed.stdout.strip()
-    if allow_back and _alias_key(value) == _alias_key(BACK_CHOICE):
-        raise BackRequested
-    if value:
-        selected = label_values.get(value)
-        if selected is None and not keep_custom_prefix and value.startswith(MENU_CUSTOM_PREFIX):
-            selected = value.removeprefix(MENU_CUSTOM_PREFIX).strip()
-        return selected or _resolve_alias(value, aliases or {})
-    if optional:
-        return None
-    raise typer.BadParameter(f"{label} is required")
 
 
 VOLUME_RE = re.compile(r"^\s*(?P<amount>[+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*(?P<unit>[a-zA-Zµμ]*)\s*$")
@@ -898,6 +960,15 @@ VOLUME_UNIT_TO_ML = {
 
 def _format_decimal(value: Decimal) -> str:
     return format(value.normalize(), "f")
+
+
+def _format_stash_amount(amount: object) -> str:
+    """Stash amounts as shown in menus and messages: rounded to one decimal."""
+    try:
+        value = Decimal(str(amount))
+    except InvalidOperation:
+        return str(amount)
+    return _format_decimal(value.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))
 
 
 def _route_supports_solution_volume(roa: str) -> bool:
@@ -987,10 +1058,10 @@ def _scale_dosage_by_volume(dosage: str, ratio: Decimal) -> str:
     if not match:
         raise typer.BadParameter(f"Could not scale dosage by volume: {dosage}")
     amount = _parse_decimal_amount(match.group("amount"))
-    scaled_amount = _format_decimal(amount * ratio)
+    scaled_amount = _format_decimal(_round_dosage_decimal(amount * ratio))
     range_amount = match.group("range_amount")
     scaled_range = (
-        f"-{_format_decimal(_parse_decimal_amount(range_amount) * ratio)}"
+        f"-{_format_decimal(_round_dosage_decimal(_parse_decimal_amount(range_amount) * ratio))}"
         if range_amount else ""
     )
     guess_marker = match.group("guess") or ""
@@ -1834,7 +1905,7 @@ def _remove_stash_entries(values: list[str]) -> list[dict[str, object]]:
 
 def _print_stash_updates(prefix: str, entries: list[dict[str, object]]) -> None:
     for entry in entries:
-        con.print(f"{prefix}: {entry['substance']} ({entry['amount']}{entry['unit']} remaining)")
+        con.print(f"{prefix}: {entry['substance']} ({_format_stash_amount(entry['amount'])}{entry['unit']} remaining)")
 
 
 def _print_stash() -> None:
@@ -1844,7 +1915,7 @@ def _print_stash() -> None:
         return
     con.print("Stash:")
     for entry in sorted(entries, key=lambda item: (str(item["substance"]).casefold(), str(item["unit"]))):
-        con.print(f"- {entry['substance']}: {entry['amount']}{entry['unit']}")
+        con.print(f"- {entry['substance']}: {_format_stash_amount(entry['amount'])}{entry['unit']}")
 
 
 def _decrement_logged_stash(substance: str, dosage: str) -> list[dict[str, object]]:
@@ -1981,50 +2052,16 @@ def _edit_settings(mode: InputMode, config_file: Path, current_values: dict[str,
         con.print(f"Updated {selected_key}.")
 
 
-def _prompt_mode_choice(label: str, current: str, aliases: dict[str, list[str]]) -> str:
-    value = _prompt_for_value(label, current, optional=False)
-    return _resolve_alias(value, aliases) or value
-
-
-def _print_prompt_choices(label: str, choices: list[str]) -> None:
-    con.print(f"{label}:")
-    for index, choice in enumerate(choices, 1):
-        con.print(f"{index}. {choice}")
-
-
-def _interactive_choice(
-    mode: InputMode,
-    label: str,
-    current: str,
-    choices: list[str],
-    aliases: dict[str, list[str]] | None,
-) -> str:
-    if mode == InputMode.prompt:
-        _print_prompt_choices(label, choices)
-        value = _prompt_for_value(label, current, optional=False)
-        try:
-            selected_index = int(value)
-        except (TypeError, ValueError):
-            return _resolve_alias(value, aliases or {}) or value
-        if selected_index < 1 or selected_index > len(choices):
-            raise typer.BadParameter(f"{label} selection out of range")
-        return choices[selected_index - 1]
-    return _menu_for_value(
-        mode.value,
-        label,
-        current,
-        candidates=choices,
-        aliases=aliases,
-        labels_by_value={choice: choice for choice in choices},
-    ) or current
-
-
-def _select_prompt_action(mode: InputMode) -> str:
+def _select_prompt_action(mode: InputMode, include_userpage: bool = True) -> str:
+    actions = [ACTION_LOG_INGESTION, ACTION_EDIT_SUPPLY_STACK, ACTION_EDIT_STASH, ACTION_HISTORY, ACTION_STATISTICS, ACTION_PLOT]
+    if include_userpage:
+        actions.append(ACTION_USERPAGE)
+    actions.append(ACTION_SETTINGS)
     return _interactive_choice(
         mode,
         "Action",
         ACTION_LOG_INGESTION,
-        [ACTION_LOG_INGESTION, ACTION_EDIT_SUPPLY_STACK, ACTION_EDIT_STASH, ACTION_HISTORY, ACTION_STATISTICS, ACTION_SETTINGS],
+        actions,
         ACTION_ALIASES,
     )
 
@@ -2294,7 +2331,7 @@ def _stash_item_id(entry: dict[str, object]) -> str:
 
 
 def _stash_item_label(entry: dict[str, object]) -> str:
-    return f"{entry['substance']} ({entry['amount']}{entry['unit']})"
+    return f"{entry['substance']} ({_format_stash_amount(entry['amount'])}{entry['unit']})"
 
 
 def _select_stash_item(mode: InputMode) -> dict[str, object] | None:
@@ -2473,12 +2510,37 @@ def _is_dosage_math_expression(amount: str) -> bool:
     return not DOSAGE_RANGE_AMOUNT_RE.match(amount)
 
 
+DOSAGE_PLACES = 2
+DOSAGE_LONG_NUMBER_RE = re.compile(r"\d+\.\d{%d,}" % (DOSAGE_PLACES + 1))
+
+
+def _round_dosage_decimal(value: Decimal) -> Decimal:
+    return value.quantize(Decimal(1).scaleb(-DOSAGE_PLACES), rounding=ROUND_HALF_UP)
+
+
+def _round_dosage_numbers(dosage: str) -> str:
+    """Round every number in a dosage string (amounts, ranges, mixture parts,
+    volumes) to DOSAGE_PLACES decimals, so 100/3 is logged as 33.33 not
+    33.3333333333."""
+    return DOSAGE_LONG_NUMBER_RE.sub(lambda match: _format_decimal(_round_dosage_decimal(Decimal(match.group()))), dosage)
+
+
 def _format_dosage_amount(amount: str) -> str:
     is_approximate, amount = _split_dosage_guess_marker(amount)
     amount = (amount or "").strip()
     if _is_dosage_math_expression(amount):
-        amount = _format_decimal(_eval_decimal_math_expression(amount))
+        amount = _format_decimal(_round_dosage_decimal(_eval_decimal_math_expression(amount)))
     return _mark_guess_dosage(amount) if is_approximate else amount
+
+
+def _is_single_dosage_expression(dosage: str | None) -> bool:
+    """True for a lone dosage whose amount is an arithmetic expression such as
+    "100/3mg" or "~50+10mg@1ml" (no list brackets or ";" separators)."""
+    if not dosage or ";" in dosage or _split_bracketed_list_value(dosage.strip()):
+        return False
+    _, stripped = _split_dosage_guess_marker(_dosage_without_volume(dosage))
+    amount, _ = _split_dosage_unit((stripped or "").strip())
+    return bool(amount) and not _is_custom_dosage(amount) and _is_dosage_math_expression(amount)
 
 
 def _format_dosage_expression(dosage: str) -> str:
@@ -2690,12 +2752,33 @@ def _menu_for_time_details(
             executable,
             "Minutes ago",
             NOW_TIME_CHOICE,
-            candidates=[NOW_TIME_CHOICE, *TIME_CHOICES],
+            candidates=[NOW_TIME_CHOICE, CUSTOM_TIME_CHOICE, *TIME_CHOICES],
             optional=True,
             allow_back=allow_back,
         )
         if minutes_ago and _alias_key(minutes_ago) == _alias_key(NOW_TIME_CHOICE):
             return time
+        if minutes_ago == CUSTOM_TIME_CHOICE:
+            # Free text with no preset entries, so "3 minutes ago" cannot be
+            # matched to "30 minutes ago" by the menu tool. Only Back is listed.
+            try:
+                custom = _menu_for_value(
+                    executable,
+                    "Minutes ago (e.g. 3, 3 minutes ago, 2 hours ago, 2025-12-04 10:00)",
+                    None,
+                    candidates=[BACK_CHOICE],
+                    allow_back=False,
+                    optional=True,
+                )
+            except BackRequested:
+                continue
+            if custom is None or _alias_key(custom) == _alias_key(BACK_CHOICE):
+                continue
+            try:
+                formatted_custom = _format_minutes_ago_input(custom)
+            except typer.BadParameter:
+                formatted_custom = None
+            return formatted_custom or custom.strip()
         formatted_minutes_ago = _format_minutes_ago_input(minutes_ago)
         if formatted_minutes_ago:
             return formatted_minutes_ago
@@ -2942,6 +3025,8 @@ def _stats_period_key(row_date: date, timescale: str) -> str:
         return f"{year}-W{week:02d}"
     if timescale == STATISTICS_TIMESCALE_MONTHLY:
         return f"{row_date.year}-{row_date.month:02d}"
+    if timescale == STATISTICS_TIMESCALE_YEARLY:
+        return str(row_date.year)
     return STATISTICS_TIMESCALE_TOTAL
 
 
@@ -2955,6 +3040,8 @@ def _stats_period_sort_key(period_key: str, timescale: str) -> tuple[int, ...]:
     if timescale == STATISTICS_TIMESCALE_MONTHLY:
         year, month = period_key.split("-", 1)
         return (int(year), int(month))
+    if timescale == STATISTICS_TIMESCALE_YEARLY:
+        return (int(period_key),)
     return (0,)
 
 
@@ -2964,6 +3051,18 @@ def _empty_stats_period() -> dict[str, object]:
         "substances": {},
         "routes": {},
     }
+
+
+def _total_weight_grams(amounts: dict[str, Decimal]) -> Decimal:
+    grams = Decimal("0")
+    for unit, amount in amounts.items():
+        if unit == "mg":
+            grams += amount / Decimal("1000")
+        elif unit == "ug":
+            grams += amount / Decimal("1000000")
+        elif unit == "g":
+            grams += amount
+    return grams
 
 
 def _format_total_amount(amounts: dict[str, Decimal]) -> str:
@@ -3001,8 +3100,10 @@ def _collect_statistics(logfile: Path, timescale: str) -> dict[str, dict[str, ob
 
             route = _format_route_for_log(row[4]) or row[4].strip().casefold()
             routes = period["routes"]
+            route_entry = None
             if isinstance(routes, dict) and route:
-                routes[route] = int(routes.get(route, 0)) + 1
+                route_entry = routes.setdefault(route, {"ingestions": 0, "amounts": {}})
+                route_entry["ingestions"] = int(route_entry["ingestions"]) + 1
 
             dosage_value = _dosage_without_volume(row[3]) if len(row) > 3 else ""
             dosages = _split_mixture_values(dosage_value)
@@ -3022,6 +3123,9 @@ def _collect_statistics(logfile: Path, timescale: str) -> dict[str, dict[str, ob
                 amounts = entry["amounts"]
                 if isinstance(amounts, dict):
                     amounts[unit] = amounts.get(unit, Decimal("0")) + amount
+                if route_entry is not None and isinstance(route_entry.get("amounts"), dict):
+                    route_amounts = route_entry["amounts"]
+                    route_amounts[unit] = route_amounts.get(unit, Decimal("0")) + amount
     return periods
 
 
@@ -3043,20 +3147,45 @@ def _statistics_substance_lines(period: dict[str, object]) -> list[str]:
         if not isinstance(value, dict):
             continue
         ingestions = int(value.get("ingestions", 0))
-        amounts = value.get("amounts")
-        total = _format_total_amount(amounts if isinstance(amounts, dict) else {})
-        rows.append((ingestions, substance, f"{substance} (total: {total}, ingestions: {ingestions})"))
-    return [row[2] for row in sorted(rows, key=lambda row: (-row[0], row[1].casefold()))]
+        amounts = value.get("amounts") if isinstance(value.get("amounts"), dict) else {}
+        total = _format_total_amount(amounts)
+        rows.append((_total_weight_grams(amounts), ingestions, substance, f"{substance} (total: {total}, ingestions: {ingestions})"))
+    # Heaviest total first; ingestion count and name break ties.
+    return [row[3] for row in sorted(rows, key=lambda row: (-row[0], -row[1], row[2].casefold()))]
+
+
+def _format_total_amount_mg(amounts: dict[str, Decimal]) -> str:
+    """Total weight in milligrams (g and ug converted), other units listed as is."""
+    parts = []
+    milligrams = Decimal("0")
+    for unit, amount in amounts.items():
+        if unit == "mg":
+            milligrams += amount
+        elif unit == "ug":
+            milligrams += amount / Decimal("1000")
+        elif unit == "g":
+            milligrams += amount * Decimal("1000")
+        else:
+            parts.append(f"{_format_decimal(amount)}{unit}")
+    if milligrams:
+        rounded = milligrams.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+        parts.insert(0, f"{_format_decimal(rounded)}mg")
+    return ", ".join(parts) if parts else "unknown"
 
 
 def _statistics_route_lines(period: dict[str, object]) -> list[str]:
     routes = period.get("routes")
     if not isinstance(routes, dict):
         return []
-    rows = [
-        (int(count), route, f"{route} ({int(count)})")
-        for route, count in routes.items()
-    ]
+    rows = []
+    for route, value in routes.items():
+        if isinstance(value, dict):
+            ingestions = int(value.get("ingestions", 0))
+            amounts = value.get("amounts")
+            total = _format_total_amount_mg(amounts if isinstance(amounts, dict) else {})
+        else:
+            ingestions, total = int(value), "unknown"
+        rows.append((ingestions, route, f"{route} (total: {total}, ingestions: {ingestions})"))
     return [row[2] for row in sorted(rows, key=lambda row: (-row[0], row[1].casefold()))]
 
 
@@ -3078,36 +3207,152 @@ def _show_statistics_lines(mode: InputMode, title: str, lines: list[str]) -> Non
     )
 
 
-def _select_statistics_choice(
-    mode: InputMode,
-    label: str,
-    choices: list[str],
-    labels_by_value: dict[str, str] | None = None,
-) -> str:
-    choices = [*choices, BACK_CHOICE]
-    labels_by_value = {**(labels_by_value or {}), BACK_CHOICE: BACK_CHOICE}
-    if mode == InputMode.prompt:
-        labels = [labels_by_value.get(choice, choice) for choice in choices]
-        _print_prompt_choices(label, labels)
-        selected = _prompt_for_value(label, labels[0], optional=False)
+def _plot_ingestions(logfile: Path) -> list[Ingestion]:
+    """Every dose in the CSV log as an Ingestion in milligrams.
+
+    Mixtures are split into one ingestion per substance, dosages in g and ug
+    are converted to mg, and dosages without a weight (volumes, ranges, blank)
+    are skipped.
+    """
+    ingestions: list[Ingestion] = []
+    for row in _read_log_rows(logfile):
+        if len(row) <= 4 or _is_log_header_row(row):
+            continue
+        timestamp = _parse_log_timestamp(row[0])
+        if timestamp is None:
+            continue
+        route = _format_route_for_log(row[4]) or row[4].strip()
+        dosages = _split_mixture_values(_dosage_without_volume(row[3]))
+        substances = _split_mixture_values_for_count(row[2], len(dosages))
+        for substance, dosage in zip(substances, dosages):
+            parsed_dosage = _parse_usage_dosage(dosage)
+            if parsed_dosage is None:
+                continue
+            amount, unit = parsed_dosage
+            if unit == "ug":
+                amount /= Decimal("1000")
+            elif unit != "mg":
+                continue
+            name = _resolve_alias(substance, SUBSTANCE_ALIASES) or substance
+            ingestions.append(Ingestion(name, timestamp, float(amount), route))
+    return ingestions
+
+
+def _parse_plot_time(value: str, flag: str) -> datetime:
+    try:
+        return _parse_set_time(value)
+    except typer.BadParameter:
+        raise typer.BadParameter(f"Could not parse '{value}' as a date/time for {flag}") from None
+
+
+def _plot_logs(
+    logfile: Path,
+    output: Path,
+    start: datetime | None,
+    stop: datetime | None,
+    font: str = DEFAULT_MAIN_FONT,
+) -> bool:
+    """Plot the log's plasma concentrations to ``output``; False when nothing was plotted."""
+    ingestions = _plot_ingestions(logfile)
+    if not ingestions:
+        err_con.print("No ingestions with a weight found in the log.", style="bold yellow")
+        return False
+    family, size = parse_font(font, 8)
+    legend_font = f"{family},{max(size - 1, 1):g}"
+    try:
+        substances = plot_plasma_concentrations(
+            ingestions,
+            output,
+            start,
+            stop,
+            main_font=f"{family},{size:g}",
+            legend_font=legend_font,
+        )
+    except PlotError as exc:
+        raise typer.BadParameter(str(exc)) from None
+    if not substances:
+        err_con.print("No ingestions inside the plotted time range.", style="bold yellow")
+    con.print(f"Plotted {len(substances)} substances to {output}")
+    return bool(substances)
+
+
+def _plot_time_range(mode: InputMode) -> tuple[datetime | None, datetime | None] | None:
+    """Ask for the plotted time span; None when the user backs out."""
+    while True:
+        choice = _select_statistics_choice(
+            mode,
+            ACTION_PLOT,
+            [*PLOT_RANGE_DELTAS, PLOT_RANGE_ALL, PLOT_RANGE_CUSTOM],
+        )
+        if choice == BACK_CHOICE:
+            return None
+        now = datetime.now(timezone.utc)
+        if choice in PLOT_RANGE_DELTAS:
+            return now - PLOT_RANGE_DELTAS[choice], now
+        if choice == PLOT_RANGE_ALL:
+            return None, now
+        start_text = _prompt_free_text(mode, "Plot start (e.g. 2 days ago, 2025-12-04 10:00)")
+        if not start_text:
+            continue
+        stop_text = _prompt_free_text(mode, "Plot stop (e.g. now, 2025-12-05 10:00)")
+        if not stop_text:
+            continue
         try:
-            selected_index = int(selected)
-        except (TypeError, ValueError):
-            for choice, choice_label in zip(choices, labels):
-                if selected == choice or selected == choice_label:
-                    return choice
-            return selected
-        if selected_index < 1 or selected_index > len(choices):
-            raise typer.BadParameter(f"{label} selection out of range")
-        return choices[selected_index - 1]
-    selected = _menu_for_value(
-        mode.value,
-        label,
-        choices[0],
-        candidates=choices,
-        labels_by_value=labels_by_value,
-    )
-    return selected or BACK_CHOICE
+            return _parse_plot_time(start_text, "start"), _parse_plot_time(stop_text, "stop")
+        except typer.BadParameter as exc:
+            err_con.print(str(exc), style="bold yellow")
+
+
+def _plot_viewer_command(viewer: str | None, output: Path) -> list[str]:
+    """The viewer command line; ``{file}`` is replaced by the image path, otherwise it is appended."""
+    try:
+        parts = shlex.split(viewer or DEFAULT_PLOT_VIEWER)
+    except ValueError as exc:
+        raise typer.BadParameter(f"Invalid plot viewer command: {exc}") from None
+    if not parts:
+        parts = [DEFAULT_PLOT_VIEWER]
+    if any("{file}" in part for part in parts):
+        return [part.replace("{file}", str(output)) for part in parts]
+    return [*parts, str(output)]
+
+
+def _show_plot(output: Path, viewer: str | None) -> None:
+    """Display the plot with the configured viewer and wait until it is closed.
+
+    Waiting keeps the menu from popping up over the image; viewers that hand
+    the file off and exit at once (such as xdg-open) just return early.
+    """
+    try:
+        command = _plot_viewer_command(viewer, output)
+    except typer.BadParameter as exc:
+        err_con.print(str(exc), style="bold yellow")
+        return
+    if shutil.which(command[0]) is None:
+        err_con.print(
+            f"Plot viewer '{command[0]}' not found; set plotviewer in the config file or pass --plot-viewer. "
+            f"The plot is at {output}",
+            style="bold yellow",
+        )
+        return
+    try:
+        subprocess.run(command, stdin=subprocess.DEVNULL, check=False)
+    except OSError as exc:
+        err_con.print(f"Could not open {output}: {exc}", style="bold yellow")
+
+
+def _plot_action(mode: InputMode, logfile: Path, viewer: str | None, font: str = DEFAULT_MAIN_FONT) -> None:
+    """The "Plot" action: ask for the time span, draw the plot and display it."""
+    time_range = _plot_time_range(mode)
+    if time_range is None:
+        return
+    start, stop = time_range
+    try:
+        plotted = _plot_logs(logfile, PLOT_FILE, start, stop, font)
+    except typer.BadParameter as exc:
+        err_con.print(str(exc), style="bold yellow")
+        return
+    if plotted:
+        _show_plot(PLOT_FILE, viewer)
 
 
 def _show_statistics(mode: InputMode, logfile: Path) -> None:
@@ -3119,6 +3364,7 @@ def _show_statistics(mode: InputMode, logfile: Path) -> None:
                 STATISTICS_TIMESCALE_DAILY,
                 STATISTICS_TIMESCALE_WEEKLY,
                 STATISTICS_TIMESCALE_MONTHLY,
+                STATISTICS_TIMESCALE_YEARLY,
                 STATISTICS_TIMESCALE_TOTAL,
             ],
         )
@@ -3129,21 +3375,28 @@ def _show_statistics(mode: InputMode, logfile: Path) -> None:
         if not period_keys:
             con.print("No statistics found.")
             continue
-        period_key = _select_statistics_choice(mode, timescale, period_keys, period_labels)
-        if period_key == BACK_CHOICE:
-            continue
+        if timescale == STATISTICS_TIMESCALE_TOTAL:
+            # A single all-time period: go straight to the sections.
+            period_key = period_keys[0]
+            period_title = timescale
+        else:
+            period_key = _select_statistics_choice(mode, timescale, period_keys, period_labels)
+            if period_key == BACK_CHOICE:
+                continue
+            period_title = f"{timescale}/{period_key}"
         section = _select_statistics_choice(
             mode,
-            period_labels.get(period_key, period_key),
+            period_title,
             [STATISTICS_SECTION_SUBSTANCES, STATISTICS_SECTION_ROUTES],
         )
         if section == BACK_CHOICE:
             continue
         period = periods[period_key]
+        section_title = f"{period_title}/{section}"
         if section == STATISTICS_SECTION_SUBSTANCES:
-            _show_statistics_lines(mode, section, _statistics_substance_lines(period))
+            _show_statistics_lines(mode, section_title, _statistics_substance_lines(period))
         elif section == STATISTICS_SECTION_ROUTES:
-            _show_statistics_lines(mode, section, _statistics_route_lines(period))
+            _show_statistics_lines(mode, section_title, _statistics_route_lines(period))
 
 
 def _load_webhook_message_cache() -> dict[str, dict[str, dict[str, object]]]:
@@ -3335,6 +3588,587 @@ def _update_history_webhook_message(logfile: Path, row: list[str], webhook: Http
         err_con.print(f"Webhook edit failed: '{exc}'", style="bold yellow")
 
 
+def _migrate_userpage(root: object) -> bool:
+    """Rename legacy top-level keys in place (TriedSubstances -> Substances,
+    RoutesOfAdministration -> Routes). Returns True when anything changed."""
+    if not isinstance(root, dict):
+        return False
+    changed = False
+    for old, new in USERPAGE_LEGACY_KEYS.items():
+        if old in root:
+            if new not in root:
+                root[new] = root.pop(old)
+            else:
+                del root[old]
+            changed = True
+    return changed
+
+
+def _load_userpage_json() -> object:
+    if not USERPAGE_CACHE_FILE.exists():
+        return {}
+    try:
+        root = json.loads(USERPAGE_CACHE_FILE.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise typer.BadParameter(f"Could not read {USERPAGE_CACHE_FILE}: {exc}") from exc
+    _migrate_userpage(root)
+    return root
+
+
+def _upload_userpage() -> None:
+    """PUT userpage.json to the AnodyneWiki usersync endpoint when the
+    nusersync/pusersync credentials are configured."""
+    if not USERSYNC_CREDENTIALS:
+        return
+    name, password = USERSYNC_CREDENTIALS
+    try:
+        payload = USERPAGE_CACHE_FILE.read_bytes()
+    except OSError as exc:
+        err_con.print(f"Userpage upload skipped: '{exc}'", style="bold yellow")
+        return
+    try:
+        response = requests.put(
+            USERSYNC_URL_TEMPLATE.format(name=name),
+            auth=(name, password),
+            headers={"Content-Type": "application/json"},
+            data=payload,
+            timeout=10,
+        )
+        response.raise_for_status()
+    except Exception as exc:
+        err_con.print(f"Userpage upload failed: '{exc}'", style="bold yellow")
+        return
+    con.print(f"Uploaded userpage ({response.status_code}).")
+
+
+def _write_userpage_json(data: object) -> None:
+    USERPAGE_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmpfile = USERPAGE_CACHE_FILE.with_suffix(f"{USERPAGE_CACHE_FILE.suffix}.tmp")
+    with open(tmpfile, "w") as outfile:
+        json.dump(data, outfile, indent=2, ensure_ascii=False)
+        outfile.write("\n")
+    tmpfile.replace(USERPAGE_CACHE_FILE)
+    _upload_userpage()
+
+
+def _json_summary(value: object) -> str:
+    if isinstance(value, dict):
+        name = value.get(JSON_NAME_KEY)
+        if isinstance(name, str) and name.strip():
+            return name
+        return f"{{{len(value)} keys}}"
+    if isinstance(value, list):
+        return f"[{len(value)} items]"
+    text = json.dumps(value, ensure_ascii=False)
+    return text if len(text) <= 60 else f"{text[:57]}..."
+
+
+def _json_value_text(value: object) -> str:
+    """Current value as shown for editing: strings raw, everything else as JSON."""
+    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+
+
+def _parse_json_input(text: str) -> object:
+    """Typed input is JSON when it parses (3, true, null, "x", [..], {..}); otherwise a string."""
+    try:
+        return json.loads(text.strip())
+    except ValueError:
+        return text
+
+
+def _prompt_json_text(mode: InputMode, label: str, current: str | None) -> str | None:
+    """Ask for a JSON value. In menu modes the current value is shown in the
+    prompt title rather than offered as an entry, so the typed text is always
+    returned as typed (a fuzzy matcher such as fuzzel would otherwise select
+    the current value for input like "60mg" over "60-150mg"). An empty input
+    cancels."""
+    if mode == InputMode.prompt:
+        return _prompt_for_value(label, current, optional=True)
+    # The only entry is "Close" (cancel), so the menu tool always has an entry
+    # to show and typed text such as "60mg" cannot fuzzy-match it.
+    value = _menu_for_value(
+        mode.value,
+        f"{label} [{current}]" if current else label,
+        USERPAGE_CLOSE_CHOICE,
+        candidates=[USERPAGE_CLOSE_CHOICE],
+        labels_by_value={USERPAGE_CLOSE_CHOICE: USERPAGE_CLOSE_CHOICE},
+        optional=True,
+    )
+    if value is None or value == USERPAGE_CLOSE_CHOICE:
+        return None
+    return value
+
+
+def _json_container_at(root: object, path: list[object]) -> object:
+    node = root
+    for key in path:
+        node = node[key]
+    return node
+
+
+def _json_entry_choices(container: dict | list) -> tuple[list[str], dict[str, str], list[object]]:
+    if isinstance(container, dict):
+        keys: list[object] = list(container.keys())
+        labels = {f"{JSON_ENTRY_PREFIX}{index}": f"{key}: {_json_summary(container[key])}" for index, key in enumerate(keys)}
+    else:
+        keys = list(range(len(container)))
+        labels = {f"{JSON_ENTRY_PREFIX}{index}": f"{index}: {_json_summary(item)}" for index, item in enumerate(container)}
+    return list(labels), labels, keys
+
+
+def _userpage_schema(path: list[object]) -> dict[str, object]:
+    """Known annotation fields for the container at `path` inside userpage.json.
+
+    "fields" maps a dict's expected keys to "list" or "str"; "item" names the
+    shape of new items in a list ("str" or "route")."""
+    pattern = tuple("*" if isinstance(key, int) else key for key in path)
+    if pattern == (USERPAGE_SUBSTANCES_KEY,):
+        return {"item": "substance"}
+    if pattern == (USERPAGE_SUBSTANCES_KEY, "*"):
+        return {"fields": {USERPAGE_ROUTES_KEY: "list", **{field: "list" for field in USERPAGE_SUBSTANCE_LIST_FIELDS}}}
+    if pattern == (USERPAGE_SUBSTANCES_KEY, "*", USERPAGE_ROUTES_KEY):
+        return {"item": "route"}
+    if pattern == (USERPAGE_SUBSTANCES_KEY, "*", USERPAGE_ROUTES_KEY, "*"):
+        return {"fields": {field: "str" for field in USERPAGE_ROUTE_FIELDS}}
+    if pattern == (USERPAGE_SUBSTANCES_KEY, "*", "Effects"):
+        return {"item": "effect"}
+    if len(pattern) == 3 and pattern[:2] == (USERPAGE_SUBSTANCES_KEY, "*") and pattern[2] in USERPAGE_SUBSTANCE_LIST_FIELDS:
+        return {"item": "str"}
+    return {}
+
+
+def _edit_json_container(mode: InputMode, root: object, path: list[object]) -> None:
+    while True:
+        container = _json_container_at(root, path)
+        if not isinstance(container, (dict, list)):
+            return
+        title = " / ".join([ACTION_USERPAGE, *(str(key) for key in path)])
+        schema = _userpage_schema(path)
+        entry_ids, labels_by_value, keys = _json_entry_choices(container)
+        missing_fields = []
+        if isinstance(container, dict):
+            missing_fields = [field for field in schema.get("fields", {}) if field not in container]
+            for index, field in enumerate(missing_fields):
+                placeholder = "[]" if schema["fields"][field] == "list" else '""'
+                labels_by_value[f"{JSON_MISSING_PREFIX}{index}"] = f"{field}: {placeholder} (missing)"
+        actions = [USERPAGE_ADD_KEY_CHOICE if isinstance(container, dict) else USERPAGE_ADD_ITEM_CHOICE]
+        if keys:
+            actions.append(USERPAGE_REMOVE_CHOICE)
+        if isinstance(container, list) and len(container) > 1:
+            actions.append(USERPAGE_MOVE_CHOICE)
+        labels_by_value.update({action: action for action in actions})
+        choices = [*entry_ids, *(f"{JSON_MISSING_PREFIX}{index}" for index in range(len(missing_fields))), *actions]
+        selected = _select_statistics_choice(mode, title, choices, labels_by_value, back_choice=USERPAGE_CLOSE_CHOICE)
+        if selected == USERPAGE_CLOSE_CHOICE:
+            return
+        if selected == USERPAGE_ADD_KEY_CHOICE:
+            key = (_prompt_json_text(mode, "Key", None) or "").strip()
+            if not key:
+                continue
+            if key in container:
+                err_con.print(f"Key '{key}' already exists", style="bold yellow")
+                continue
+            text = _prompt_json_text(mode, key, None)
+            if text is None:
+                continue
+            container[key] = _parse_json_input(text)
+            _write_userpage_json(root)
+            con.print(f"Added {key}.")
+            continue
+        if selected == USERPAGE_ADD_ITEM_CHOICE:
+            item_shape = schema.get("item")
+            if item_shape in ("route", "substance"):
+                name = _prompt_json_text(mode, "Route name" if item_shape == "route" else "Substance name", None)
+                if name is None or not name.strip():
+                    continue
+                container.append({JSON_NAME_KEY: name.strip()})
+                _write_userpage_json(root)
+                con.print(f"Added {item_shape} {name.strip()}.")
+                _edit_json_container(mode, root, [*path, len(container) - 1])
+                continue
+            if item_shape == "effect":
+                value = _prompt_effect_value(mode, "Effect")
+                if value is None:
+                    continue
+                container.append(value)
+                _write_userpage_json(root)
+                con.print(f"Added effect {value}.")
+                continue
+            text = _prompt_json_text(mode, f"Item {len(container)}", None)
+            if text is None:
+                continue
+            container.append(text if item_shape == "str" else _parse_json_input(text))
+            _write_userpage_json(root)
+            con.print("Added item.")
+            continue
+        if selected == USERPAGE_REMOVE_CHOICE:
+            target = _select_statistics_choice(
+                mode, f"{title} / {USERPAGE_REMOVE_CHOICE}", entry_ids, labels_by_value, back_choice=USERPAGE_CLOSE_CHOICE
+            )
+            if target == USERPAGE_CLOSE_CHOICE or not target.startswith(JSON_ENTRY_PREFIX):
+                continue
+            key = keys[int(target[len(JSON_ENTRY_PREFIX):])]
+            del container[key]
+            _write_userpage_json(root)
+            con.print(f"Removed {key}.")
+            continue
+        if selected == USERPAGE_MOVE_CHOICE:
+            target = _select_statistics_choice(
+                mode, f"{title} / {USERPAGE_MOVE_CHOICE}", entry_ids, labels_by_value, back_choice=USERPAGE_CLOSE_CHOICE
+            )
+            if target == USERPAGE_CLOSE_CHOICE or not target.startswith(JSON_ENTRY_PREFIX):
+                continue
+            index = int(target[len(JSON_ENTRY_PREFIX):])
+            positions = [str(number) for number in range(1, len(container) + 1)]
+            position_labels = {
+                str(number): f"{number}: {_json_summary(item)}" + (" (current)" if number == index + 1 else "")
+                for number, item in enumerate(container, 1)
+            }
+            chosen = _select_statistics_choice(
+                mode,
+                f"{title} / Move {_json_summary(container[index])} to position",
+                positions,
+                position_labels,
+                back_choice=USERPAGE_CLOSE_CHOICE,
+            )
+            if chosen == USERPAGE_CLOSE_CHOICE or chosen not in position_labels:
+                continue
+            new_index = int(chosen) - 1
+            if new_index != index:
+                container.insert(new_index, container.pop(index))
+                _write_userpage_json(root)
+                con.print(f"Moved {_json_summary(container[new_index])} to position {new_index + 1}.")
+            continue
+        if selected.startswith(JSON_MISSING_PREFIX):
+            field = missing_fields[int(selected[len(JSON_MISSING_PREFIX):])]
+            if schema["fields"][field] == "list":
+                container[field] = []
+                _write_userpage_json(root)
+                _edit_json_container(mode, root, [*path, field])
+                continue
+            text = _prompt_json_text(mode, field, None)
+            if text is None:
+                continue
+            container[field] = text
+            _write_userpage_json(root)
+            con.print(f"Added {field}.")
+            continue
+        if selected.startswith(JSON_ENTRY_PREFIX):
+            key = keys[int(selected[len(JSON_ENTRY_PREFIX):])]
+            value = container[key]
+            if isinstance(value, (dict, list)):
+                _edit_json_container(mode, root, [*path, key])
+                continue
+            text = _prompt_json_text(mode, str(key), _json_value_text(value))
+            if text is None:
+                continue
+            field_shape = schema.get("fields", {}).get(key) if isinstance(container, dict) else schema.get("item")
+            container[key] = text if field_shape == "str" else _parse_json_input(text)
+            _write_userpage_json(root)
+            con.print(f"Updated {key}.")
+            continue
+        raise typer.BadParameter(f"Unknown userpage choice: {selected}")
+
+
+def _userpage_menu(mode: InputMode, userpage: str | None, logfile: Path | None) -> None:
+    while True:
+        choice = _select_statistics_choice(
+            mode,
+            ACTION_USERPAGE,
+            [USERPAGE_ANNOTATE_CHOICE, USERPAGE_MANUAL_CHOICE, USERPAGE_RESET_CHOICE, ],
+        )
+        if choice == BACK_CHOICE:
+            return
+        if choice == USERPAGE_RESET_CHOICE:
+            _download_userpage(userpage)
+            continue
+        if choice == USERPAGE_ANNOTATE_CHOICE:
+            _add_userpage_annotations(mode, logfile)
+            continue
+        if choice == USERPAGE_MANUAL_CHOICE:
+            _edit_userpage(mode)
+            continue
+        raise typer.BadParameter(f"Unknown userpage choice: {choice}")
+
+
+def _format_elapsed(delta: timedelta) -> str:
+    """Elapsed time as "45min", "1h 30min" or "2d 3h"."""
+    minutes = max(0, int(delta.total_seconds() // 60))
+    days, rest = divmod(minutes, 24 * 60)
+    hours, mins = divmod(rest, 60)
+    if days:
+        return f"{days}d {hours}h" if hours else f"{days}d"
+    if hours:
+        return f"{hours}h {mins}min" if mins else f"{hours}h"
+    return f"{mins}min"
+
+
+def _userpage_substance_entry(tried: list, name: str) -> dict:
+    """Find or create the Substances entry for `name`."""
+    name = (_resolve_alias(name, SUBSTANCE_ALIASES) or name).strip()
+    for item in tried:
+        if isinstance(item, dict) and isinstance(item.get(JSON_NAME_KEY), str) and \
+                _alias_key(_resolve_alias(item[JSON_NAME_KEY], SUBSTANCE_ALIASES) or item[JSON_NAME_KEY]) == _alias_key(name):
+            return item
+    entry = {JSON_NAME_KEY: name, USERPAGE_ROUTES_KEY: []}
+    tried.append(entry)
+    return entry
+
+
+def _userpage_route_entry(entry: dict, roa: str) -> dict | None:
+    """Find or create the route object for `roa` in a Substances entry."""
+    route_name = _format_route_for_log(roa) or roa.strip().casefold()
+    routes = entry.get(USERPAGE_ROUTES_KEY)
+    if routes is None:
+        routes = entry[USERPAGE_ROUTES_KEY] = []
+    if not isinstance(routes, list):
+        return None
+    for item in routes:
+        if isinstance(item, dict) and isinstance(item.get(JSON_NAME_KEY), str) and \
+                (_format_route_for_log(item[JSON_NAME_KEY]) or item[JSON_NAME_KEY].strip().casefold()) == route_name:
+            return item
+    route = {JSON_NAME_KEY: route_name}
+    routes.append(route)
+    return route
+
+
+def _prompt_annotation_text(mode: InputMode, label: str, suggestions: list[str]) -> str | None:
+    """Ask for an annotation value with suggestions; typed text is accepted."""
+    default = suggestions[0] if suggestions else None
+    if mode == InputMode.prompt:
+        return _prompt_for_value(label, default, optional=True)
+    return _menu_for_value(mode.value, label, default, candidates=suggestions, optional=True)
+
+
+def _all_userpage_effects(root: dict) -> list[str]:
+    effects: list[str] = []
+    tried = root.get(USERPAGE_SUBSTANCES_KEY)
+    for item in tried if isinstance(tried, list) else []:
+        values = item.get("Effects") if isinstance(item, dict) else None
+        for value in values if isinstance(values, list) else []:
+            if isinstance(value, str) and value.strip():
+                _append_recent_unique(effects, value)
+    return effects
+
+
+def _annotate_log_entry(mode: InputMode, row: list[str]) -> None:
+    timestamp, _, title, dosage, roa, *_ = _padded_log_row(row)
+    names = [
+        (_resolve_alias(name, SUBSTANCE_ALIASES) or name).strip()
+        for name in (_split_mixture_values(title) or [title])
+    ]
+    names = [name for name in names if name and not _is_skip_choice(name) and _alias_key(name) != _alias_key(UNKNOWN_SUBSTANCE_TITLE)]
+    if not names:
+        err_con.print("This log has no known substance to annotate", style="bold yellow")
+        return
+    logged_at = _parse_log_timestamp(timestamp)
+    while True:
+        choices = [ANNOTATION_FELT_ONSET, ANNOTATION_FELT_COMEUP, ANNOTATION_FELT_COMEDOWN, ANNOTATION_FELT_OVER]
+        if len(names) == 1:
+            choices.append(ANNOTATION_FELT_EFFECT)
+        choice = _select_statistics_choice(mode, _history_entry_label(row), choices)
+        if choice == BACK_CHOICE:
+            return
+        root = _load_userpage_json()
+        if not isinstance(root, dict):
+            raise typer.BadParameter(f"{USERPAGE_CACHE_FILE} does not hold a JSON object")
+        tried = root.get(USERPAGE_SUBSTANCES_KEY)
+        if tried is None:
+            tried = root[USERPAGE_SUBSTANCES_KEY] = []
+        if not isinstance(tried, list):
+            raise typer.BadParameter(f"{USERPAGE_SUBSTANCES_KEY} in {USERPAGE_CACHE_FILE} is not an array")
+
+        if choice in ANNOTATION_ROUTE_FIELDS:
+            field = ANNOTATION_ROUTE_FIELDS[choice]
+            elapsed = _format_elapsed(datetime.now(timezone.utc) - logged_at) if logged_at else None
+            value = _prompt_annotation_text(mode, f"{choice} ({field})", [elapsed] if elapsed else [])
+            if value is None or not value.strip():
+                continue
+            for name in names:
+                route = _userpage_route_entry(_userpage_substance_entry(tried, name), roa)
+                if route is not None:
+                    route[field] = value.strip()
+            _write_userpage_json(root)
+            con.print(f"Set {field} for {', '.join(names)} via {roa}: {value.strip()}")
+            continue
+        if choice == ANNOTATION_FELT_EFFECT:
+            entry = _userpage_substance_entry(tried, names[0])
+            value = _prompt_effect_value(mode, f"{choice} ({names[0]})")
+            if value is None or not value.strip():
+                continue
+            effects = entry.get("Effects")
+            if effects is None:
+                effects = entry["Effects"] = []
+            if not isinstance(effects, list):
+                err_con.print(f"Effects of {names[0]} is not an array", style="bold yellow")
+                continue
+            if any(isinstance(item, str) and _alias_key(item) == _alias_key(value) for item in effects):
+                con.print(f"{names[0]} already lists the effect {value.strip()}")
+                continue
+            effects.append(value.strip())
+            _write_userpage_json(root)
+            con.print(f"Added effect to {names[0]}: {value.strip()}")
+            continue
+        raise typer.BadParameter(f"Unknown annotation: {choice}")
+
+
+def _add_userpage_annotations(mode: InputMode, logfile: Path | None) -> None:
+    if _menu_logfile(logfile) is None:
+        return
+    while True:
+        rows = _read_log_rows(logfile)
+        entries = [(index, row) for index, row in enumerate(rows) if row and not _is_log_header_row(row)]
+        entries.reverse()
+        recent = entries[:ANNOTATION_RECENT_COUNT]
+        if not recent:
+            con.print("No logs found.")
+            return
+        choices = [str(index) for index, _ in recent]
+        labels_by_value = {str(index): _history_entry_label(row) for index, row in recent}
+        selected = _select_statistics_choice(mode, USERPAGE_ANNOTATE_CHOICE, choices, labels_by_value)
+        if selected == BACK_CHOICE:
+            return
+        if selected not in labels_by_value:
+            raise typer.BadParameter(f"Unknown log entry: {selected}")
+        _annotate_log_entry(mode, rows[int(selected)])
+
+
+def _edit_userpage(mode: InputMode) -> None:
+    root = _load_userpage_json()
+    if not isinstance(root, (dict, list)):
+        raise typer.BadParameter(f"{USERPAGE_CACHE_FILE} does not hold a JSON object or array")
+    if not USERPAGE_CACHE_FILE.exists():
+        con.print(f"{USERPAGE_CACHE_FILE} does not exist yet; it is created on the first change.")
+    _edit_json_container(mode, root, [])
+
+
+def _parse_dosage_range(text: str | None) -> tuple[Decimal, Decimal, str] | None:
+    """Parse "25-50mg", "~60mg" or "0.5g" into (low, high, unit) in a normalised unit."""
+    if not text:
+        return None
+    match = DOSAGE_AMOUNT_RE.match(_dosage_without_volume(text))
+    if not match:
+        return None
+    try:
+        low = Decimal(match.group("amount"))
+        high = Decimal(match.group("range_amount")) if match.group("range_amount") else low
+    except InvalidOperation:
+        return None
+    normalized_low = _normalize_usage_unit(low, match.group("unit"))
+    normalized_high = _normalize_usage_unit(high, match.group("unit"))
+    if not normalized_low or not normalized_high:
+        return None
+    low, unit = normalized_low
+    high, _ = normalized_high
+    return min(low, high), max(low, high), unit
+
+
+def _format_dosage_range(low: Decimal, high: Decimal, unit: str) -> str:
+    if low == high:
+        return f"{_format_decimal(low)}{unit}"
+    return f"{_format_decimal(low)}-{_format_decimal(high)}{unit}"
+
+
+def _plain_logged_dosage(dosage: str) -> str:
+    return _strip_dosage_guess_marker(_dosage_without_volume(dosage)) or dosage.strip()
+
+
+def _update_userpage_tried_substance(title: str, dosage: str, roa: str, salt: str | None = None) -> None:
+    """Keep the userpage's Substances in step with a logged ingestion.
+
+    For each logged component: find (or add) its Substances entry, find
+    (or add, with the logged dosage) the route used, and widen the route's
+    "Dosage" range when the logged dosage falls outside it."""
+    if not USERPAGE_CACHE_FILE.exists():
+        return
+    try:
+        root = _load_userpage_json()
+    except typer.BadParameter as exc:
+        err_con.print(f"Userpage not updated: {exc}", style="bold yellow")
+        return
+    if not isinstance(root, dict):
+        return
+    tried = root.get(USERPAGE_SUBSTANCES_KEY)
+    if tried is None:
+        tried = root[USERPAGE_SUBSTANCES_KEY] = []
+    if not isinstance(tried, list):
+        return
+
+    names = _split_mixture_values(title) or [title]
+    doses = _split_mixture_values(_dosage_without_volume(dosage)) or [dosage]
+    salts = _split_mixture_values(salt) if salt else []
+    salts = [*salts, *([""] * (len(names) - len(salts)))]
+    route_name = _format_route_for_log(roa) or roa.strip().casefold()
+    changes = []
+    for name, dose, row_salt in zip(names, doses, salts):
+        name = (_resolve_alias(name, SUBSTANCE_ALIASES) or name).strip()
+        if not name or _is_skip_choice(name) or _alias_key(name) == _alias_key(UNKNOWN_SUBSTANCE_TITLE):
+            continue
+        plain_dose = _plain_logged_dosage(dose)
+        entry = next(
+            (item for item in tried if isinstance(item, dict) and isinstance(item.get(JSON_NAME_KEY), str)
+             and _alias_key(_resolve_alias(item[JSON_NAME_KEY], SUBSTANCE_ALIASES) or item[JSON_NAME_KEY]) == _alias_key(name)),
+            None,
+        )
+        if entry is None:
+            entry = {JSON_NAME_KEY: name, USERPAGE_ROUTES_KEY: []}
+            tried.append(entry)
+            changes.append(f"added {name}")
+        row_salt = (row_salt or "").strip()
+        if row_salt and _alias_key(row_salt) != "unknown" and not _is_skip_choice(row_salt):
+            entry_salts = entry.get("Salts")
+            if entry_salts is None:
+                entry_salts = entry["Salts"] = []
+            if isinstance(entry_salts, list) and not any(
+                isinstance(item, str) and _alias_key(_resolve_alias(item, SALT_ALIASES) or item)
+                == _alias_key(_resolve_alias(row_salt, SALT_ALIASES) or row_salt)
+                for item in entry_salts
+            ):
+                entry_salts.append(row_salt)
+                changes.append(f"{name}: added salt {row_salt}")
+        routes = entry.get(USERPAGE_ROUTES_KEY)
+        if routes is None:
+            routes = entry[USERPAGE_ROUTES_KEY] = []
+        if not isinstance(routes, list):
+            continue
+        route = next(
+            (item for item in routes if isinstance(item, dict) and isinstance(item.get(JSON_NAME_KEY), str)
+             and (_format_route_for_log(item[JSON_NAME_KEY]) or item[JSON_NAME_KEY].strip().casefold()) == route_name),
+            None,
+        )
+        if route is None:
+            routes.append({JSON_NAME_KEY: route_name, "Dosage": plain_dose})
+            changes.append(f"{name}: added route {route_name} ({plain_dose})")
+            continue
+        logged = _parse_dosage_range(dose)
+        if logged is None:
+            continue
+        current = _parse_dosage_range(route.get("Dosage") if isinstance(route.get("Dosage"), str) else None)
+        if current is None:
+            if not route.get("Dosage"):
+                route["Dosage"] = plain_dose
+                changes.append(f"{name} {route_name}: dosage {plain_dose}")
+            continue
+        low, high, unit = current
+        logged_low, logged_high, logged_unit = logged
+        if logged_unit != unit:
+            continue
+        new_low, new_high = min(low, logged_low), max(high, logged_high)
+        if (new_low, new_high) != (low, high):
+            route["Dosage"] = _format_dosage_range(new_low, new_high, unit)
+            changes.append(f"{name} {route_name}: dosage {route['Dosage']}")
+
+    if not changes:
+        return
+    try:
+        _write_userpage_json(root)
+    except OSError as exc:
+        err_con.print(f"Userpage not updated: '{exc}'", style="bold yellow")
+        return
+    for change in changes:
+        con.print(f"Updated userpage: {change}")
+
+
 def _read_log_rows(logfile: Path) -> list[list[str]]:
     if not logfile.exists():
         return []
@@ -3458,6 +4292,198 @@ def _edit_history_entry(mode: InputMode, logfile: Path, row_index: int, webhook:
         raise typer.BadParameter(f"Unknown history action: {action}")
 
 
+def _prompt_history_page(mode: InputMode, page_number: int, page_count: int) -> int | None:
+    """Ask for a history page number; None when cancelled or invalid."""
+    label = f"Page (1-{page_count})"
+    if mode == InputMode.prompt:
+        text = _prompt_for_value(label, str(page_number), optional=True)
+    else:
+        text = _menu_for_value(
+            mode.value,
+            label,
+            str(page_number),
+            candidates=[str(number) for number in range(1, page_count + 1)],
+            optional=True,
+        )
+    if text is None:
+        return None
+    try:
+        target = int(text.strip())
+    except ValueError:
+        err_con.print(f"'{text}' is not a page number", style="bold yellow")
+        return None
+    if target < 1 or target > page_count:
+        err_con.print(f"Page {target} is out of range (1-{page_count})", style="bold yellow")
+        return None
+    return target
+
+
+def _journal_substance_title(name: str, titles: dict[str, str]) -> str:
+    """The AnodyneWiki title for a Journal substance name: from the local
+    substance cache when known, else from the API (cached), else the name."""
+    key = _alias_key(name)
+    if key in titles:
+        return titles[key]
+    title = _resolve_cached_substance_title(name)
+    if title is None:
+        entry, _ = _fetch_substance_entry_result(name)
+        if entry:
+            _cache_substance_entry(entry)
+            fetched = entry.get("Title")
+            title = fetched if isinstance(fetched, str) and fetched else None
+    titles[key] = title or name
+    con.print(f"{name} -> {titles[key]}" if title else f"{name} (not found on AnodyneWiki, kept as is)")
+    return titles[key]
+
+
+def _journal_ingestion_to_row(ingestion: dict, user: str, titles: dict[str, str] | None = None) -> list[str] | None:
+    """Convert one PsychonautWiki Journal ingestion to a logpy CSV row."""
+    raw_time = ingestion.get("time")
+    if not isinstance(raw_time, (int, float)):
+        return None
+    timestamp = datetime.fromtimestamp(raw_time / 1000, tz=timezone.utc).isoformat(timespec="milliseconds")
+    name = ingestion.get("substanceName")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    name = name.strip()
+    name = _journal_substance_title(name, titles) if titles is not None else (_resolve_alias(name, SUBSTANCE_ALIASES) or name)
+    dose = ingestion.get("dose")
+    units = ingestion.get("units") if isinstance(ingestion.get("units"), str) else ""
+    if isinstance(dose, (int, float)) and not isinstance(dose, bool):
+        dosage = f"{_format_decimal(Decimal(str(dose)))}{units.strip()}"
+        if ingestion.get("isDoseAnEstimate"):
+            dosage = _mark_guess_dosage(dosage)
+    else:
+        dosage = "unknown"
+    route_raw = ingestion.get("administrationRoute")
+    route_text = route_raw.strip().casefold().replace("_", " ") if isinstance(route_raw, str) else ""
+    roa = _format_route_for_log(route_text) or route_text
+    notes = ingestion.get("notes")
+    note = notes.strip() if isinstance(notes, str) else ""
+    return [timestamp, user, name, dosage, roa, "", "", note]
+
+
+def _import_journal_export(logfile: Path, path: Path, user: str) -> None:
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        err_con.print(f"Could not read {path}: {exc}", style="bold yellow")
+        return
+    experiences = data.get("experiences") if isinstance(data, dict) else None
+    if not isinstance(experiences, list):
+        err_con.print(f"{path} has no \"experiences\" array", style="bold yellow")
+        return
+
+    rows = _read_log_rows(logfile)
+    header = [rows[0]] if rows and _is_log_header_row(rows[0]) else []
+    body = rows[len(header):]
+    existing = {(_padded_log_row(row)[0], _alias_key(_padded_log_row(row)[2])) for row in body}
+    imported = skipped = unreadable = 0
+    titles: dict[str, str] = {}
+    _merge_cached_substance_aliases()
+    con.print("Resolving substance titles on AnodyneWiki...")
+    for experience in experiences:
+        ingestions = experience.get("ingestions") if isinstance(experience, dict) else None
+        for ingestion in ingestions if isinstance(ingestions, list) else []:
+            row = _journal_ingestion_to_row(ingestion, user, titles) if isinstance(ingestion, dict) else None
+            if row is None:
+                unreadable += 1
+                continue
+            key = (row[0], _alias_key(row[2]))
+            if key in existing:
+                skipped += 1
+                continue
+            existing.add(key)
+            body.append(row)
+            imported += 1
+    if imported:
+        body.sort(key=lambda row: _parse_log_timestamp(_padded_log_row(row)[0]) or datetime.min.replace(tzinfo=timezone.utc))
+        _write_log_rows(logfile, [*header, *body])
+    con.print(f"Imported {imported} ingestions from {path} ({skipped} already logged, {unreadable} unreadable).")
+
+
+def _prompt_import_path(mode: InputMode) -> Path | None:
+    label = "Journal export (.json) path"
+    if mode == InputMode.prompt:
+        text = _prompt_for_value(label, None, optional=True)
+    else:
+        text = _menu_for_value(mode.value, label, None, candidates=[BACK_CHOICE], optional=True)
+    if not text or _alias_key(text) == _alias_key(BACK_CHOICE):
+        return None
+    path = Path(text.strip()).expanduser()
+    if not path.is_file():
+        err_con.print(f"{path} is not a file", style="bold yellow")
+        return None
+    return path
+
+
+def _prompt_effect_value(mode: InputMode, label: str) -> str | None:
+    """Compose an Effects entry: a severity token, then an unreferenced text,
+    an effect-index reference ({xeff '...'}) or a Wikipedia reference ({wkp '...'})."""
+    severity_labels = [name for name, _ in EFFECT_SEVERITY_CHOICES]
+    severity_choice = _select_statistics_choice(mode, f"{label} / Severity", severity_labels)
+    if severity_choice == BACK_CHOICE or severity_choice not in severity_labels:
+        return None
+    severity = dict(EFFECT_SEVERITY_CHOICES)[severity_choice]
+    kind = _select_statistics_choice(
+        mode, f"{label} / Reference", [EFFECT_REF_UNREFERENCED, EFFECT_REF_INDEX, EFFECT_REF_WIKIPEDIA]
+    )
+    if kind == BACK_CHOICE:
+        return None
+    if kind == EFFECT_REF_UNREFERENCED:
+        text = _prompt_free_text(mode, f"{label} / Effect")
+        reference = text.strip() if text and text.strip() else None
+    elif kind == EFFECT_REF_INDEX:
+        effect = _select_statistics_choice(mode, f"{label} / Effect index", list(IE_EFFECTS))
+        reference = f"{{xeff '{effect}'}}" if effect != BACK_CHOICE and effect in IE_EFFECTS else None
+    elif kind == EFFECT_REF_WIKIPEDIA:
+        article = _prompt_free_text(mode, f"{label} / Wikipedia article")
+        reference = f"{{wkp '{article.strip()}'}}" if article and article.strip() else None
+    else:
+        raise typer.BadParameter(f"Unknown effect reference: {kind}")
+    if reference is None:
+        return None
+    return f"{severity} {reference}".strip()
+
+
+def _wipe_logs(logfile: Path) -> None:
+    rows = _read_log_rows(logfile)
+    header = [rows[0]] if rows and _is_log_header_row(rows[0]) else []
+    count = len(rows) - len(header)
+    _write_log_rows(logfile, header)
+    cache = _load_webhook_message_cache()
+    if cache.pop(_logfile_cache_key(logfile), None) is not None:
+        _write_webhook_message_cache(cache)
+    con.print(f"Wiped {count} logs from {logfile}.")
+
+
+def _history_menu(mode: InputMode, logfile: Path, webhook: HttpUrl | None, userpage: str | None, user: str | None) -> None:
+    while True:
+        choice = _select_statistics_choice(mode, ACTION_HISTORY, [HISTORY_BROWSE_CHOICE, HISTORY_IMPORT_CHOICE, HISTORY_WIPE_CHOICE])
+        if choice == BACK_CHOICE:
+            return
+        if choice == HISTORY_BROWSE_CHOICE:
+            _show_history(mode, logfile, webhook, userpage)
+            continue
+        if choice == HISTORY_IMPORT_CHOICE:
+            path = _prompt_import_path(mode)
+            if path is not None:
+                _import_journal_export(logfile, path, _require_option("--user", user))
+            continue
+        if choice == HISTORY_WIPE_CHOICE:
+            rows = _read_log_rows(logfile)
+            count = len([row for row in rows if row and not _is_log_header_row(row)])
+            if count == 0:
+                con.print("No logs to wipe.")
+                continue
+            if _confirm_choice(mode, f"Wipe all {count} logs from {logfile}?"):
+                _wipe_logs(logfile)
+            else:
+                con.print("Wipe cancelled.")
+            continue
+        raise typer.BadParameter(f"Unknown history choice: {choice}")
+
+
 def _show_history(mode: InputMode, logfile: Path, webhook: HttpUrl | None, userpage: str | None) -> None:
     offset = 0
     while True:
@@ -3473,16 +4499,24 @@ def _show_history(mode: InputMode, logfile: Path, webhook: HttpUrl | None, userp
             return
         choices = [str(index) for index, _ in page]
         labels_by_value = {str(index): _history_entry_label(row) for index, row in page}
+        page_number = offset // HISTORY_PAGE_SIZE + 1
+        page_count = (len(entries) + HISTORY_PAGE_SIZE - 1) // HISTORY_PAGE_SIZE
         if offset + HISTORY_PAGE_SIZE < len(entries):
             choices.append(HISTORY_NEXT_CHOICE)
             labels_by_value[HISTORY_NEXT_CHOICE] = HISTORY_NEXT_CHOICE
-        page_number = offset // HISTORY_PAGE_SIZE + 1
-        page_count = (len(entries) + HISTORY_PAGE_SIZE - 1) // HISTORY_PAGE_SIZE
+        if page_count > 1:
+            choices.append(HISTORY_GOTO_CHOICE)
+            labels_by_value[HISTORY_GOTO_CHOICE] = HISTORY_GOTO_CHOICE
         selected = _select_statistics_choice(mode, f"History ({page_number} of {page_count})", choices, labels_by_value)
         if selected == BACK_CHOICE:
             return
         if selected == HISTORY_NEXT_CHOICE:
             offset += HISTORY_PAGE_SIZE
+            continue
+        if selected == HISTORY_GOTO_CHOICE:
+            target = _prompt_history_page(mode, page_number, page_count)
+            if target is not None:
+                offset = (target - 1) * HISTORY_PAGE_SIZE
             continue
         if selected not in labels_by_value:
             raise typer.BadParameter(f"Unknown log entry: {selected}")
@@ -3525,13 +4559,18 @@ def _format_list_item(value: str) -> str:
     return buffer.getvalue()
 
 
+@functools.lru_cache(maxsize=1)
+def _known_salt_keys() -> frozenset[str]:
+    keys = {_alias_key(choice) for choice in SALT_CHOICES}
+    keys.update(_alias_key(choice) for choice in SALT_ALIASES)
+    return frozenset(keys)
+
+
 def _is_known_salt_choice(salt: str) -> bool:
     resolved = _resolve_alias(salt, SALT_ALIASES)
     if not resolved:
         return False
-    known_keys = {_alias_key(choice) for choice in SALT_CHOICES}
-    known_keys.update(_alias_key(choice) for choice in SALT_ALIASES)
-    return _alias_key(resolved) in known_keys
+    return _alias_key(resolved) in _known_salt_keys()
 
 
 def _format_salt_for_log(salt: str | None) -> str | None:
@@ -3835,7 +4874,7 @@ def _route_candidates_by_recency(logfile: Path, current: str | None = None) -> l
     return candidates
 
 
-def _menu_for_route(executable: str, logfile: Path, current: str | None = None) -> str:
+def _menu_for_route(executable: str, logfile: Path, current: str | None = None, allow_back: bool = False) -> str:
     roa_candidates = _route_candidates_by_recency(logfile, current)
     current = _format_route_for_log(current)
     roa = _menu_for_value(
@@ -3844,6 +4883,7 @@ def _menu_for_route(executable: str, logfile: Path, current: str | None = None) 
         current,
         candidates=roa_candidates,
         aliases=ROA_ALIASES,
+        allow_back=allow_back,
     )
     if not roa:
         raise typer.BadParameter("Route of administration is required")
@@ -3864,9 +4904,21 @@ def _scan_logged_choices(logfile: Path) -> tuple[list[str], dict[str, list[str]]
     if not logfile.exists():
         return [], {}, []
 
-    substances = []
-    dosages: dict[str, list[str]] = {}
-    salts = []
+    # Recency-ordered, de-duplicated collections kept as dicts keyed by alias
+    # key: a repeated value is moved to the end, and the dicts are reversed at
+    # the end so the most recent entry comes first. This is linear in the
+    # number of rows, unlike re-scanning lists for every row.
+    def touch(recent: dict[str, str], value: str) -> None:
+        value = value.strip()
+        if not value:
+            return
+        key = _alias_key(value)
+        recent.pop(key, None)
+        recent[key] = value
+
+    substances: dict[str, str] = {}
+    dosages: dict[str, dict[str, str]] = {}
+    salts: dict[str, str] = {}
     with open(logfile, newline="") as infile:
         for row in csv.reader(infile):
             if len(row) <= 3 or row[2].strip().lower() in ("substance", "med"):
@@ -3880,17 +4932,20 @@ def _scan_logged_choices(logfile: Path) -> tuple[list[str], dict[str, list[str]]
             row_salts = _split_mixture_values(row[6] if len(row) > 6 else None)
 
             for row_substance in row_substances:
-                _append_recent_unique(substances, row_substance, SUBSTANCE_ALIASES)
+                touch(substances, row_substance)
 
             for row_substance, row_dosage in zip(row_substances, row_dosages):
-                substance_dosages = dosages.setdefault(row_substance, [])
-                _append_recent_unique(substance_dosages, row_dosage)
+                touch(dosages.setdefault(row_substance.strip(), {}), row_dosage)
 
             for row_salt in row_salts:
                 if not _is_known_salt_choice(row_salt):
-                    _append_recent_unique(salts, row_salt)
+                    touch(salts, row_salt)
 
-    return substances, dosages, salts
+    return (
+        list(reversed(substances.values())),
+        {substance: list(reversed(recent.values())) for substance, recent in dosages.items()},
+        list(reversed(salts.values())),
+    )
 
 def _sync_choice_cache_from_history(logfile: Path) -> tuple[list[str], dict[str, list[str]], list[str]]:
     substances, dosages, salts = _scan_logged_choices(logfile)
@@ -4238,11 +5293,15 @@ def _collect_input(
     needle_gauge: str | None,
     needle_length: str | None,
     syringe_size: str | None,
+    allow_back_to_menu: bool = False,
 ) -> tuple[LogKind, str, str, str, str | None, str | None, str | None, str | None]:
     if mode == InputMode.flags:
         substances = _split_mixture_values(substance)
         dosages = _split_mixture_values(dosage)
         salts = _split_mixture_values(salt)
+        if len(substances) == 1 and len(dosages) > 1 and _is_single_dosage_expression(dosage):
+            # "100/3mg" or "50+10mg" for one substance is arithmetic, not a mixture.
+            dosages = [dosage.strip()]
         is_mixture = len(substances) > 1 or len(dosages) > 1 or len(salts) > 1
         roa = _format_route_for_log(roa)
 
@@ -4285,7 +5344,12 @@ def _collect_input(
         return kind, substance, dosage, roa, site, salt, note, time
 
     if mode == InputMode.prompt:
-        roa = _format_route_for_log(_prompt_for_value("Route", _format_route_for_log(roa)))
+        if allow_back_to_menu:
+            con.print(f"Enter {BACK_CHOICE} to return to the main menu")
+        route_input = _prompt_for_value("Route", _format_route_for_log(roa))
+        if allow_back_to_menu and route_input and _alias_key(route_input) == _alias_key(BACK_CHOICE):
+            raise IngestionCancelled
+        roa = _format_route_for_log(route_input)
         volume = _prompt_for_value("Volume", volume or UNKNOWN_VOLUME_CHOICE, optional=False)
         selected_syringe = None
         selected_needle = None
@@ -4330,7 +5394,10 @@ def _collect_input(
 
     while True:
         menu = mode.value
-        roa = _menu_for_route(menu, logfile, roa)
+        try:
+            roa = _menu_for_route(menu, logfile, roa, allow_back=allow_back_to_menu)
+        except BackRequested:
+            raise IngestionCancelled from None
         while True:
             try:
                 volume_ml = _menu_for_value(
@@ -4413,10 +5480,32 @@ def _collect_input(
                             )
 
 
+def _ensure_logfile(logfile: Path | None) -> None:
+    """Create the CSV log with its header row when it does not exist yet."""
+    if logfile is None or logfile.exists():
+        return
+    try:
+        logfile.parent.mkdir(parents=True, exist_ok=True)
+        with open(logfile, "w", newline="") as outfile:
+            csv.writer(outfile).writerow(LOG_HEADER)
+    except OSError as exc:
+        err_con.print(f"Could not create {logfile}: '{exc}'", style="bold yellow")
+        return
+    con.print(f"File '{logfile}' has been created.")
+
+
 def _require_option(label: str, value):
     if value is None:
         raise typer.BadParameter(f"Missing required option: {label}")
     return value
+
+
+def _menu_logfile(logfile: Path | None) -> Path | None:
+    """The log file for a menu action, or None after a warning when none is
+    configured, so the menu can carry on instead of the program exiting."""
+    if logfile is None:
+        err_con.print("No log file configured: set logfile in the config file or pass --csv", style="bold yellow")
+    return logfile
 
 
 def _format_markdown_link_label(label: str) -> str:
@@ -4590,11 +5679,29 @@ def log_ingestion(
         help="prompt for ingestion fields with bemenu selectors",
         rich_help_panel="Input Mode",
     )] = False,
-    # fuzzel_mode: Annotated[bool, typer.Option(
-    #     "--fuzzel",
-    #     help="prompt for ingestion fields with fuzzel selectors",
-    #     rich_help_panel="Input Mode",
-    # )] = False,
+    menu_tool: Annotated[str | None, typer.Option(
+        "--menu-tool", "-mt",
+        help=(
+            "prompt for ingestion fields with a custom dmenu-style command, e.g. 'rofi -dmenu' "
+            "or 'fuzzel --dmenu --prompt={prompt}'; '{prompt}' is replaced by the prompt text, "
+            "otherwise '-p <prompt>' is appended"
+        ),
+        rich_help_panel="Input Mode",
+    )] = None,
+    menu_icon_color: Annotated[str, typer.Option(
+        "--menu-icon-color",
+        help=(
+            "colour for the icons shown in fuzzel mode; the icons of fuzzel's icon theme are "
+            "copied to the logpy cache with this fill colour. Pass an empty string to use the "
+            "theme's icons unchanged"
+        ),
+        rich_help_panel="Input Mode",
+    )] = menu.MENU_ICON_COLOR,
+    fuzzel_mode: Annotated[bool, typer.Option(
+        "--fuzzel", "-mf",
+        help=f"prompt for ingestion fields with fuzzel selectors (same as --menu-tool '{FUZZEL_MENU_TOOL}')",
+        rich_help_panel="Input Mode",
+    )] = False,
     sync_choices: Annotated[bool, typer.Option(
         "--sync-choices",
         help="scan the CSV log and refresh menu choices, dosages, salts, and substance abbreviations",
@@ -4664,9 +5771,36 @@ def log_ingestion(
         help="sum usage for a day from the CSV log, using d.m.y format; defaults to today when passed without a value",
         rich_help_panel="Input Mode",
     )] = None,
+    plot: Annotated[Path | None, typer.Option(
+        "--plot",
+        help="plot the estimated blood plasma concentrations of the CSV log to this image file",
+        rich_help_panel="Plot Options",
+    )] = None,
+    plot_start: Annotated[str | None, typer.Option(
+        "--plot-start",
+        help="start of the plotted time span, e.g. '2 days ago' or '2025-12-04 10:00'; defaults to the first log",
+        rich_help_panel="Plot Options",
+    )] = None,
+    plot_stop: Annotated[str | None, typer.Option(
+        "--plot-stop",
+        help="end of the plotted time span; defaults to now",
+        rich_help_panel="Plot Options",
+    )] = None,
+    plot_font: Annotated[str, typer.Option(
+        "--plot-font",
+        help='font of the plot, gnuplot style "name,size"',
+        rich_help_panel="Plot Options",
+    )] = DEFAULT_MAIN_FONT,
+    plotviewer: Annotated[str | None, typer.Option(
+        "--plot-viewer",
+        help='command that displays the plot drawn by the "Plot" menu action, e.g. "imv" or "feh {file}"; '
+        f"defaults to {DEFAULT_PLOT_VIEWER}",
+        rich_help_panel="Plot Options",
+    )] = None,
     logfile: Annotated[Path | None, typer.Option(
         "--csv",
         help="File to write logs to",
+        show_default=str(DEFAULT_LOGFILE),
         rich_help_panel="Configuration Options"
     )] = None,
     user: Annotated[str | None, typer.Option(
@@ -4687,6 +5821,16 @@ def log_ingestion(
         parser=HttpUrl,
         help="discord webhook url",
         rich_help_panel="Configuration Options"
+    )] = None,
+    nusersync: Annotated[str | None, typer.Option(
+        "--nusersync",
+        help="AnodyneWiki usersync user name; with --pusersync, userpage.json is uploaded after every local change",
+        rich_help_panel="Configuration Options",
+    )] = None,
+    pusersync: Annotated[str | None, typer.Option(
+        "--pusersync",
+        help="AnodyneWiki usersync password",
+        rich_help_panel="Configuration Options",
     )] = None,
     mouse: Annotated[bool, typer.Option(
         "--mouse/--no-mouse",
@@ -4709,9 +5853,18 @@ def log_ingestion(
         is_eager=True,
     )] = None
 ):
-    global MENU_MOUSE_ENABLED
+    global USERSYNC_CREDENTIALS
 
-    MENU_MOUSE_ENABLED = mouse
+    menu.MENU_MOUSE_ENABLED = mouse
+    USERSYNC_CREDENTIALS = (nusersync, pusersync) if nusersync and pusersync else None
+    menu.MENU_ICON_COLOR = menu_icon_color.strip()
+    _ensure_userpage_cache(userpage)
+    _ensure_logfile(logfile)
+    if fuzzel_mode and menu_tool is not None:
+        raise typer.BadParameter("Choose only one input mode")
+    menu.MENU_TOOL_COMMAND = _parse_menu_tool(FUZZEL_MENU_TOOL if fuzzel_mode else menu_tool)
+    if menu_tool is not None and not menu.MENU_TOOL_COMMAND:
+        raise typer.BadParameter("--menu-tool must name the menu command")
     started_at = datetime.now(timezone.utc)
     has_ingestion_input = any(
         (
@@ -4731,7 +5884,8 @@ def log_ingestion(
             prompt_mode,
             dmenu_mode,
             bemenu_mode,
-            # fuzzel_mode,
+            menu_tool,
+            fuzzel_mode,
             flags_mode,
             log_ingestion_action,
             stack_menu_action,
@@ -4769,7 +5923,7 @@ def log_ingestion(
         _print_stash()
     has_supply_operation = bool(add_syringes or add_needles or remove_syringes or remove_needles or show_stock)
     has_stash_operation = bool(add_stash or remove_stash or show_stash)
-    if (has_supply_operation or has_stash_operation) and not has_ingestion_input and not sync_choices and not daily_usage:
+    if (has_supply_operation or has_stash_operation) and not has_ingestion_input and not sync_choices and not daily_usage and not plot:
         return
 
     if daily_usage:
@@ -4777,7 +5931,18 @@ def log_ingestion(
         _print_daily_usage(logfile, daily_usage)
         return
 
-    mode = _resolve_input_mode(flags_mode, prompt_mode, dmenu_mode, bemenu_mode, False)
+    if plot:
+        logfile = _require_option("--csv", logfile)
+        _plot_logs(
+            logfile,
+            plot,
+            _parse_plot_time(plot_start, "--plot-start") if plot_start else None,
+            _parse_plot_time(plot_stop, "--plot-stop") if plot_stop else None,
+            plot_font,
+        )
+        return
+
+    mode = _resolve_input_mode(flags_mode, prompt_mode, dmenu_mode, bemenu_mode, False, bool(menu.MENU_TOOL_COMMAND))
     base_prompt_action = _resolve_base_prompt_action(log_ingestion_action, stack_menu_action, stash_menu_action)
     if base_prompt_action and mode == InputMode.flags:
         raise typer.BadParameter("--log-ingestion, --stack-menu, and --stash-menu require a prompt/menu mode")
@@ -4790,7 +5955,12 @@ def log_ingestion(
             _edit_stash(mode)
             return False
         if action == ACTION_STATISTICS:
-            _show_statistics(mode, _require_option("--csv", logfile))
+            if _menu_logfile(logfile) is not None:
+                _show_statistics(mode, logfile)
+            return False
+        if action == ACTION_PLOT:
+            if _menu_logfile(logfile) is not None:
+                _plot_action(mode, logfile, plotviewer, plot_font)
             return False
         if action == ACTION_SETTINGS:
             _edit_settings(
@@ -4801,13 +5971,20 @@ def log_ingestion(
                     "userpage": userpage,
                     "logfile": logfile,
                     "webhook": webhook,
+                    "nusersync": nusersync,
+                    "pusersync": pusersync,
                     "mouse": mouse,
                     "notify": notify,
+                    "plotviewer": plotviewer,
                 },
             )
             return False
+        if action == ACTION_USERPAGE:
+            _userpage_menu(mode, userpage, logfile)
+            return False
         if action == ACTION_HISTORY:
-            _show_history(mode, _require_option("--csv", logfile), webhook, userpage)
+            if _menu_logfile(logfile) is not None:
+                _history_menu(mode, logfile, webhook, userpage, user)
             return False
         if action != ACTION_LOG_INGESTION:
             raise typer.BadParameter(f"Unknown action: {action}")
@@ -4815,10 +5992,10 @@ def log_ingestion(
 
     return_to_menu = False
     if mode != InputMode.flags and not has_supply_operation and not has_stash_operation and not sync_choices and not daily_usage:
-        action = base_prompt_action or _select_prompt_action(mode)
+        action = base_prompt_action or _select_prompt_action(mode, bool(userpage))
         return_to_menu = base_prompt_action is None
         while not handle_menu_action(action):
-            action = _select_prompt_action(mode)
+            action = _select_prompt_action(mode, bool(userpage))
             return_to_menu = True
             started_at = datetime.now(timezone.utc)
 
@@ -4835,24 +6012,42 @@ def log_ingestion(
         if not has_ingestion_input:
             return
 
+    while return_to_menu and (logfile is None or user is None):
+        if logfile is None:
+            _menu_logfile(logfile)
+        else:
+            err_con.print("No user configured: set user in the config file or pass --user", style="bold yellow")
+        action = _select_prompt_action(mode, bool(userpage))
+        while not handle_menu_action(action):
+            action = _select_prompt_action(mode, bool(userpage))
+        started_at = datetime.now(timezone.utc)
     logfile = _require_option("--csv", logfile)
     user = _require_option("--user", user)
     while True:
-        kind, substance, dosage, roa, site, salt, note, time = _collect_input(
-            mode,
-            logfile,
-            _coalesce(substance_arg, substance_opt),
-            _coalesce(dosage_arg, dosage_opt),
-            _coalesce(roa_arg, roa_opt),
-            site,
-            salt,
-            note,
-            _coalesce(" ".join(time_arg) if time_arg else None, set_time),
-            volume_opt,
-            needle_gauge_opt,
-            needle_length_opt,
-            syringe_size_opt,
-        )
+        try:
+            kind, substance, dosage, roa, site, salt, note, time = _collect_input(
+                mode,
+                logfile,
+                _coalesce(substance_arg, substance_opt),
+                _coalesce(dosage_arg, dosage_opt),
+                _coalesce(roa_arg, roa_opt),
+                site,
+                salt,
+                note,
+                _coalesce(" ".join(time_arg) if time_arg else None, set_time),
+                volume_opt,
+                needle_gauge_opt,
+                needle_length_opt,
+                syringe_size_opt,
+                allow_back_to_menu=return_to_menu,
+            )
+        except IngestionCancelled:
+            action = _select_prompt_action(mode, bool(userpage))
+            while not handle_menu_action(action):
+                action = _select_prompt_action(mode, bool(userpage))
+            started_at = datetime.now(timezone.utc)
+            continue
+        dosage = _round_dosage_numbers(dosage)
         ingestion_time = (
             _menu_default_ingestion_time(mode, time, offset_time, started_at)
             or _parse_ingestion_time(time, offset_time)
@@ -4861,10 +6056,7 @@ def log_ingestion(
         is_backdated = datetime.now(timezone.utc) - ingestion_time > timedelta(minutes=10)
         title = substance_md = substance
 
-        if not logfile.exists():
-            logfile.parent.mkdir(parents=True, exist_ok=True)
-            logfile.touch()
-            con.print(f"File '{logfile}' has been created.")
+        _ensure_logfile(logfile)
 
         if mode == InputMode.prompt:
             accept_mode = "confirm"
@@ -4881,6 +6073,8 @@ def log_ingestion(
         _add_logged_choice_options(logfile, title, dosage, salt)
         _print_supply_updates("Used supply", _decrement_logged_supplies(note))
         _print_stash_updates("Used stash", _decrement_logged_stash(title, dosage))
+        if userpage:
+            _update_userpage_tried_substance(title, dosage, roa, salt)
 
         logline = _format_logline(
             user, userpage, kind, dosage, substance_md, salt, roa, logged_site, note, time_now, is_backdated
@@ -4899,7 +6093,7 @@ def log_ingestion(
 
         if not return_to_menu:
             return
-        action = _select_prompt_action(mode)
+        action = _select_prompt_action(mode, bool(userpage))
         while not handle_menu_action(action):
-            action = _select_prompt_action(mode)
+            action = _select_prompt_action(mode, bool(userpage))
         started_at = datetime.now(timezone.utc)

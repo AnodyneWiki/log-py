@@ -21,11 +21,20 @@ logpy looks for a config file at `~/.config/logpy/config.toml` (or `$LOGPY_CONFI
 
 ```toml
 user = "yourname"
-logfile = "log.csv"
+logfile = "logs.csv" # default: ~/.config/logpy/logs.csv, created with a header row when missing
 webhook = "https://discord.com/api/webhooks/..."
 mouse = false # disables mouse interaction in dmenu and bemenu selectors
+nusersync = "yourname" # AnodyneWiki usersync user name
+pusersync = "secret"   # AnodyneWiki usersync password; with both set, userpage.json is uploaded after every local change
 notify = true # sends a desktop notification after logging an ingestion
+plotviewer = "imv" # command that displays the plot drawn by the "Plot" action (default: xdg-open)
 ```
+
+When `userpage` points at an AnodyneWiki user page such as `https://anodyne.wiki/user/0xea` and `~/.config/logpy/userpage.json` does not exist yet, logpy downloads `https://anodyne.wiki/api/user/0xea` to that file on its next run. A failed download prints a warning and does not block logging.
+
+A `userpage.json` that still uses the older top-level keys `TriedSubstances` or `RoutesOfAdministration` has them renamed to `Substances` and `Routes` when it is read or downloaded.
+
+When `nusersync` and `pusersync` are set, every local change to `userpage.json` (from the Userpage editor or the automatic `Substances` update) is also uploaded with a `PUT` to `https://anodyne.wiki/api/usersync/<nusersync>` using basic authentication. Downloads from upstream are not re-uploaded. A failed upload prints a warning; the local file keeps the change.
 
 ## Usage
 
@@ -54,7 +63,14 @@ logpy --daily-usage --csv log.csv
 logpy --daily-usage=23.9.2026 --csv log.csv
 ```
 
-Dosage prompts accept simple arithmetic expressions for numeric amounts, e.g. entering `90 / 2` and unit `mg` logs `45mg`. Expressions also work in argument mode and may be prefixed with `~` to mark an approximate dosage, e.g. `~25*2mg` logs and posts `~50mg`.
+Plot the estimated blood plasma concentrations of the logged ingestions:
+
+```sh
+logpy --plot plot.png --csv log.csv
+logpy --plot plot.png --plot-start "2024-01-01 00:00" --plot-stop "2024-01-02 00:00" --plot-font Monospace,8 --csv log.csv
+```
+
+Dosage prompts accept simple arithmetic expressions for numeric amounts, e.g. entering `90 / 2` and unit `mg` logs `45mg`. Expressions also work in argument mode (a lone `100/3mg` or `50+10mg` is arithmetic, not a mixture) and may be prefixed with `~` to mark an approximate dosage, e.g. `~25*2mg` logs and posts `~50mg`. Dosage amounts are rounded to two decimals before being logged and posted, so `100/3mg` becomes `33.33mg`.
 
 Track virtual syringe and needle supply counts:
 
@@ -98,13 +114,30 @@ logpy --dmenu
 # "bemenu" mode
 logpy --bemenu
 
-# "fuzzel" mode disabled for now
-# logpy --fuzzel
+# "fuzzel" mode (same as --menu-tool "fuzzel --dmenu", with icons from fuzzel's icon theme on the choices)
+logpy --fuzzel --menu-icon-color "#ffffff"   # default colour; pass "" to use the theme icons unchanged
+logpy --fuzzel
+
+# custom menu mode with any dmenu-style command
+logpy --menu-tool "rofi -dmenu"
+logpy --menu-tool "fuzzel --dmenu --prompt={prompt}"
 ```
 
-The main action menu also offers a "History" entry. It lists the newest 100 logged ingestions, with a "Next 100" choice at the end for older pages. Selecting an entry offers "Edit", which changes one field of that row at a time, and "Remove", which deletes the row. Both rewrite the CSV in place and rebuild the cached menu choices from the remaining rows, so a substance, dosage, or salt that no longer appears in any row stops being suggested. This is a local read of the CSV; the AnodyneWiki lookups of `--sync-choices` are not repeated.
+In fuzzel mode the choices carry icons from fuzzel's configured icon theme (`--icon-theme` on its command line, else `icon-theme` in `fuzzel.ini`, else hicolor). Because symbolic theme icons have a fixed dark fill, logpy copies each icon to `~/.config/logpy/icons/` with the fill replaced by `--menu-icon-color`, white by default, and hands fuzzel that copy. Pass an empty colour to use the theme icons as they are.
+
+Menu tools select the best matching entry when Enter is pressed, so typed text that resembles an entry (such as `3 minutes ago` next to `30 minutes ago`) selects that entry. Pick "Custom time" in the "Minutes ago" menu to type a value freely, or prefix typed text with `~` to force it in any menu (dmenu and fuzzel also output the raw input on Shift+Enter).
+
+`--menu-tool` runs the given command for every selection, feeding the choices on stdin and reading the chosen line from stdout. `{prompt}` anywhere in the command is replaced by the prompt text; without it, `-p <prompt>` is appended, which dmenu, bemenu, rofi, and wofi understand.
+
+The main action menu also offers a "History" entry with two choices. "Import Journal Export" asks for the path of a PsychonautWiki Journal `.json` export and appends its ingestions (timestamp, substance, dose with units and `~` for estimates, route, notes) to the CSV in chronological order, with each substance name replaced by its AnodyneWiki title (`/api/substance/<name>`, cached locally; the name is kept when it is not indexed), skipping ingestions already logged. "Wipe logs" deletes every logged ingestion after a confirmation (a header row is kept). "Browse Logs" lists the newest 100 logged ingestions, with a "Next 100" choice at the end for older pages and a "Goto Page: ?" choice that asks for a page number to jump to. Selecting an entry offers "Edit", which changes one field of that row at a time, and "Remove", which deletes the row. Both rewrite the CSV in place and rebuild the cached menu choices from the remaining rows, so a substance, dosage, or salt that no longer appears in any row stops being suggested. This is a local read of the CSV; the AnodyneWiki lookups of `--sync-choices` are not repeated.
 
 When a webhook is configured, the id of each Discord message posted for an ingestion is stored in `~/.config/logpy/webhook-messages.json`. Editing a log through History updates that message and removing the log deletes it. Messages posted before this file existed have no stored id and are left untouched.
+
+The "Userpage" action is shown only when `userpage` is set. When it is, every logged ingestion also updates `Substances` in `userpage.json`: the substance entry and the route used are added when missing, a new route records the logged dosage, a logged form (salt) is added to the entry's `Salts` when not yet listed, and an existing route's `Dosage` range (such as `25-50mg`) is widened when the logged dosage falls below or above it. It opens a menu with "Reset userpage to anodyne api output", which downloads the API document again and overwrites `~/.config/logpy/userpage.json`, "Add annotations", which lists the newest 100 logs and, for the chosen log, offers "Felt Onset", "Felt Comeup", "Felt Comedown" and "Felt Over" (setting the `Onset`, `Comeup`, `Duration` and `Aftereffectduration` of that route in the substance's `Substances` entry, prefilled with the time elapsed since the log) and, for single-substance logs, "Felt Effect" (appending to the entry's `Effects`). An effect is composed from a severity ("Unknown" adds nothing, otherwise `{sev 'light'}`, `{sev 'moderate'}`, `{sev 'strong'}` or `{sev 'intense'}`) followed by free text, an effect-index entry (`{xeff '<effect>'}`, chosen from the bundled index) or a Wikipedia article (`{wkp '<article>'}`); the same picker is used when adding to `Effects` in the manual editor, and "Manually edit userpage", a small JSON editor for that file. Objects and arrays open as nested menus, selecting a scalar edits it in place, and "Add key", "Add item", "Remove", and "Move" (reorder an array item by picking its new position) change the current level. Typed values are stored as JSON when they parse (`3`, `true`, `null`, `"text"`, `[1, 2]`) and as plain strings otherwise. Objects that carry a `Name` key, such as the entries of `Substances`, are listed by that name. Inside a `Substances` entry the supported annotation fields (`Routes`, `Classes`, `Salts`, `Sources`, `Indication`, `Tolerance`, `Effects`, `After`, `Odor`, `Notes`) are shown as placeholders when absent; selecting one creates it. `Routes` items are objects with `Name`, `Dosage`, `Onset`, `Comeup`, `Duration`, and `Aftereffectduration`, shown the same way, and "Add item" there asks for the route name, and "Add item" in `Substances` itself asks for the substance name and creates the object. Every change is written immediately, and "Close" steps back up one level, or back to the action menu at the top.
+
+The "Statistics" action offers Daily, Weekly, Monthly, Yearly, and Total views. Each period lists its substances (total weight and ingestion count) and its routes of administration (ingestion count and the total weight taken via that route, in mg). Total skips the period list since there is only one.
+
+The "Plot" action of the main menu draws the estimated blood plasma concentrations of the logged ingestions over time, as `--plot` does from the command line. It asks for the time span (the last 24 hours, 3 days, week, month or year, all time, or a custom start and stop typed as free text such as `2 days ago` or `2025-12-04 10:00`), writes the image to `~/.config/logpy/plot.png` and displays it right away with the `plotviewer` command (`--plot-viewer`), which defaults to `xdg-open`; `{file}` in the command is replaced by the image path, otherwise the path is appended. logpy waits for the viewer to exit before returning to the menu, so a viewer such as `imv` or `feh` keeps the menu out of the way while the plot is open. Every dose is run through a one-compartment pharmacokinetic model with first-order absorption (`src/log_py/plot.py`, a port of dkinplot.rb) and the curves of each substance are summed and drawn as filled areas in mg/L. Mixtures count as one dose per substance, dosages in g and ug are converted to mg, and dosages without a weight (volumes, ranges) are skipped.
 
 ## Flags
 
@@ -114,12 +147,18 @@ When a webhook is configured, the id of each Discord message posted for an inges
 | `--prompt` | | prompt for ingestion fields on stdin |
 | `--dmenu` | | prompt for ingestion fields with dmenu selectors |
 | `--bemenu` | | prompt for ingestion fields with bemenu selectors |
-| `--fuzzel` | | disabled for now |
+| `--fuzzel` | `-mf` | prompt for ingestion fields with fuzzel selectors, same as `--menu-tool "fuzzel --dmenu"` |
+| `--menu-tool` | `-mt` | prompt for ingestion fields with a custom dmenu-style command, e.g. `rofi -dmenu`; `{prompt}` is replaced by the prompt text, otherwise `-p <prompt>` is appended |
 | `--sync-choices` | | scan the CSV log and refresh menu choices, dosages, salts, and substance abbreviations |
 | `--log-ingestion` | | start prompt/menu mode directly in the ingestion logger |
 | `--stack-menu` | | start prompt/menu mode directly in the interactive supply stack editor |
 | `--stash-menu` | | start prompt/menu mode directly in the interactive stash editor |
 | `--daily-usage` | | sum usage for a day from the CSV log; optional value uses `d.m.y` format and defaults to today |
+| `--plot` | | plot the estimated blood plasma concentrations of the CSV log to this image file (PNG unless the extension says otherwise) |
+| `--plot-start` | | start of the plotted time span, e.g. `2 days ago` or `2025-12-04 10:00`; defaults to the first log |
+| `--plot-stop` | | end of the plotted time span; defaults to now |
+| `--plot-font` | | font of the plot, gnuplot style `name,size` (default `monospace,8`; the legend uses one point less) |
+| `--plot-viewer` | | command that displays the plot drawn by the "Plot" menu action, e.g. `imv` or `feh {file}` (default `xdg-open`) |
 | `--add-syringe` / `--add-syringes` | | add syringe stock to the virtual supply cache |
 | `--add-needle` / `--add-needles` | | add needle stock to the virtual supply cache |
 | `--remove-syringe` / `--remove-syringes` | | remove syringe stock from the virtual supply cache |
@@ -149,4 +188,4 @@ When a webhook is configured, the id of each Discord message posted for an inges
 
 ## Ingestion CSV format
 
-Columns: `timestamp, user, substance, dosage, roa, site, salt, note`
+The file is created with the header row `timestamp,user,med,amount,ROA,comment` when it does not exist. Columns: `timestamp, user, substance, dosage, roa, site, salt, note`
