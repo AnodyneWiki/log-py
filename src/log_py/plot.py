@@ -347,14 +347,17 @@ def _render(
     ax = fig.add_subplot(111)
     ax.set_facecolor("none")
 
-    # gnuplot margins are expressed in character cells: 10, 1, 3.75, 0.5.
+    # Margins in character cells (left, right, bottom, top). The gnuplot script
+    # used 10, 1, 3.75, 0.5; these are tighter on the left and bottom and leave
+    # room on the right and top so the last tick label and the curves' peaks
+    # are not cut off.
     char_w = main_size * dpi / 72.0 * 0.6
     char_h = main_size * dpi / 72.0 * 1.25
     fig.subplots_adjust(
-        left=min(0.45, 10 * char_w / width),
-        right=max(0.55, 1 - 1 * char_w / width),
-        bottom=min(0.45, 3.75 * char_h / height),
-        top=max(0.55, 1 - 0.5 * char_h / height),
+        left=min(0.45, 8 * char_w / width),
+        right=max(0.55, 1 - 3 * char_w / width),
+        bottom=min(0.45, 2.75 * char_h / height),
+        top=max(0.55, 1 - 1.5 * char_h / height),
     )
 
     palette = [color if color is not None else text_color for color in GNUPLOT_COLORS]
