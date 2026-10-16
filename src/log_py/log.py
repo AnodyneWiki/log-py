@@ -3036,7 +3036,7 @@ def _menu_for_time_details(
             executable,
             "Minutes ago",
             NOW_TIME_CHOICE,
-            candidates=[NOW_TIME_CHOICE, *TIME_CHOICES, CUSTOM_TIME_CHOICE],
+            candidates=[NOW_TIME_CHOICE, CUSTOM_TIME_CHOICE, *TIME_CHOICES],
             optional=True,
             allow_back=allow_back,
         )
