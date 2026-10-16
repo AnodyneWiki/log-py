@@ -25,6 +25,7 @@ from rich.console import Console
 
 from log_py.effects import IE_EFFECTS
 from log_py.salts import SALT_ALIASES, SALT_CHOICES
+from log_py.plot import DEFAULT_MAIN_FONT, Ingestion, PlotError, parse_font, plot_plasma_concentrations
 from log_py import menu
 from log_py.menu import (
     BACK_CHOICE,
@@ -199,6 +200,23 @@ ACTION_ALIASES = {
     ACTION_USERPAGE: ["userpage", "profile"],
 }
 
+STATISTICS_PLOT_CHOICE = "Plot"
+PLOT_RANGE_DAY = "Last 24 hours"
+PLOT_RANGE_THREE_DAYS = "Last 3 days"
+PLOT_RANGE_WEEK = "Last week"
+PLOT_RANGE_MONTH = "Last month"
+PLOT_RANGE_YEAR = "Last year"
+PLOT_RANGE_ALL = "All time"
+PLOT_RANGE_CUSTOM = "Custom range"
+PLOT_RANGE_DELTAS = {
+    PLOT_RANGE_DAY: timedelta(days=1),
+    PLOT_RANGE_THREE_DAYS: timedelta(days=3),
+    PLOT_RANGE_WEEK: timedelta(weeks=1),
+    PLOT_RANGE_MONTH: timedelta(days=30),
+    PLOT_RANGE_YEAR: timedelta(days=365),
+}
+PLOT_FILE = app_dir / "plot.png"
+
 # Icon names attached to menu choices in fuzzel mode. They are freedesktop icon
 # names, resolved by fuzzel through its configured icon theme.
 MENU_ICONS.update({
@@ -215,6 +233,8 @@ MENU_ICONS.update({
     USERPAGE_ANNOTATE_CHOICE: "list-add-symbolic",
     USERPAGE_MANUAL_CHOICE: "document-edit-symbolic",
     ACTION_STATISTICS: "x-office-spreadsheet-symbolic",
+    STATISTICS_PLOT_CHOICE: "image-x-generic-symbolic",
+    PLOT_RANGE_CUSTOM: "document-edit-symbolic",
     ACTION_SETTINGS: "emblem-system-symbolic",
     BACK_CHOICE: "go-previous-symbolic",
     DONE_SUBSTANCE_CHOICE: "go-next-symbolic",
@@ -3184,6 +3204,135 @@ def _show_statistics_lines(mode: InputMode, title: str, lines: list[str]) -> Non
     )
 
 
+def _plot_ingestions(logfile: Path) -> list[Ingestion]:
+    """Every dose in the CSV log as an Ingestion in milligrams.
+
+    Mixtures are split into one ingestion per substance, dosages in g and ug
+    are converted to mg, and dosages without a weight (volumes, ranges, blank)
+    are skipped.
+    """
+    ingestions: list[Ingestion] = []
+    for row in _read_log_rows(logfile):
+        if len(row) <= 4 or _is_log_header_row(row):
+            continue
+        timestamp = _parse_log_timestamp(row[0])
+        if timestamp is None:
+            continue
+        route = _format_route_for_log(row[4]) or row[4].strip()
+        dosages = _split_mixture_values(_dosage_without_volume(row[3]))
+        substances = _split_mixture_values_for_count(row[2], len(dosages))
+        for substance, dosage in zip(substances, dosages):
+            parsed_dosage = _parse_usage_dosage(dosage)
+            if parsed_dosage is None:
+                continue
+            amount, unit = parsed_dosage
+            if unit == "ug":
+                amount /= Decimal("1000")
+            elif unit != "mg":
+                continue
+            name = _resolve_alias(substance, SUBSTANCE_ALIASES) or substance
+            ingestions.append(Ingestion(name, timestamp, float(amount), route))
+    return ingestions
+
+
+def _parse_plot_time(value: str, flag: str) -> datetime:
+    try:
+        return _parse_set_time(value)
+    except typer.BadParameter:
+        raise typer.BadParameter(f"Could not parse '{value}' as a date/time for {flag}") from None
+
+
+def _plot_logs(
+    logfile: Path,
+    output: Path,
+    start: datetime | None,
+    stop: datetime | None,
+    font: str = DEFAULT_MAIN_FONT,
+) -> bool:
+    """Plot the log's plasma concentrations to ``output``; False when nothing was plotted."""
+    ingestions = _plot_ingestions(logfile)
+    if not ingestions:
+        err_con.print("No ingestions with a weight found in the log.", style="bold yellow")
+        return False
+    family, size = parse_font(font, 8)
+    legend_font = f"{family},{max(size - 1, 1):g}"
+    try:
+        substances = plot_plasma_concentrations(
+            ingestions,
+            output,
+            start,
+            stop,
+            main_font=f"{family},{size:g}",
+            legend_font=legend_font,
+        )
+    except PlotError as exc:
+        raise typer.BadParameter(str(exc)) from None
+    if not substances:
+        err_con.print("No ingestions inside the plotted time range.", style="bold yellow")
+    con.print(f"Plotted {len(substances)} substances to {output}")
+    return bool(substances)
+
+
+def _plot_time_range(mode: InputMode) -> tuple[datetime | None, datetime | None] | None:
+    """Ask for the plotted time span; None when the user backs out."""
+    while True:
+        choice = _select_statistics_choice(
+            mode,
+            STATISTICS_PLOT_CHOICE,
+            [*PLOT_RANGE_DELTAS, PLOT_RANGE_ALL, PLOT_RANGE_CUSTOM],
+        )
+        if choice == BACK_CHOICE:
+            return None
+        now = datetime.now(timezone.utc)
+        if choice in PLOT_RANGE_DELTAS:
+            return now - PLOT_RANGE_DELTAS[choice], now
+        if choice == PLOT_RANGE_ALL:
+            return None, now
+        start_text = _prompt_free_text(mode, "Plot start (e.g. 2 days ago, 2025-12-04 10:00)")
+        if not start_text:
+            continue
+        stop_text = _prompt_free_text(mode, "Plot stop (e.g. now, 2025-12-05 10:00)")
+        if not stop_text:
+            continue
+        try:
+            return _parse_plot_time(start_text, "start"), _parse_plot_time(stop_text, "stop")
+        except typer.BadParameter as exc:
+            err_con.print(str(exc), style="bold yellow")
+
+
+def _show_plot(mode: InputMode, output: Path) -> None:
+    """Open the plot with xdg-open in menu modes; the path is printed either way."""
+    if mode == InputMode.prompt:
+        return
+    opener = shutil.which("xdg-open")
+    if opener is None:
+        return
+    try:
+        subprocess.Popen(
+            [opener, str(output)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        err_con.print(f"Could not open {output}: {exc}", style="bold yellow")
+
+
+def _plot_statistics(mode: InputMode, logfile: Path) -> None:
+    time_range = _plot_time_range(mode)
+    if time_range is None:
+        return
+    start, stop = time_range
+    try:
+        plotted = _plot_logs(logfile, PLOT_FILE, start, stop)
+    except typer.BadParameter as exc:
+        err_con.print(str(exc), style="bold yellow")
+        return
+    if plotted:
+        _show_plot(mode, PLOT_FILE)
+
+
 def _show_statistics(mode: InputMode, logfile: Path) -> None:
     while True:
         timescale = _select_statistics_choice(
@@ -3195,10 +3344,14 @@ def _show_statistics(mode: InputMode, logfile: Path) -> None:
                 STATISTICS_TIMESCALE_MONTHLY,
                 STATISTICS_TIMESCALE_YEARLY,
                 STATISTICS_TIMESCALE_TOTAL,
+                STATISTICS_PLOT_CHOICE,
             ],
         )
         if timescale == BACK_CHOICE:
             return
+        if timescale == STATISTICS_PLOT_CHOICE:
+            _plot_statistics(mode, logfile)
+            continue
         periods = _collect_statistics(logfile, timescale)
         period_keys, period_labels = _period_choices(periods, timescale)
         if not period_keys:
@@ -5600,6 +5753,26 @@ def log_ingestion(
         help="sum usage for a day from the CSV log, using d.m.y format; defaults to today when passed without a value",
         rich_help_panel="Input Mode",
     )] = None,
+    plot: Annotated[Path | None, typer.Option(
+        "--plot",
+        help="plot the estimated blood plasma concentrations of the CSV log to this image file",
+        rich_help_panel="Plot Options",
+    )] = None,
+    plot_start: Annotated[str | None, typer.Option(
+        "--plot-start",
+        help="start of the plotted time span, e.g. '2 days ago' or '2025-12-04 10:00'; defaults to the first log",
+        rich_help_panel="Plot Options",
+    )] = None,
+    plot_stop: Annotated[str | None, typer.Option(
+        "--plot-stop",
+        help="end of the plotted time span; defaults to now",
+        rich_help_panel="Plot Options",
+    )] = None,
+    plot_font: Annotated[str, typer.Option(
+        "--plot-font",
+        help='font of the plot, gnuplot style "name,size"',
+        rich_help_panel="Plot Options",
+    )] = DEFAULT_MAIN_FONT,
     logfile: Annotated[Path | None, typer.Option(
         "--csv",
         help="File to write logs to",
@@ -5726,12 +5899,23 @@ def log_ingestion(
         _print_stash()
     has_supply_operation = bool(add_syringes or add_needles or remove_syringes or remove_needles or show_stock)
     has_stash_operation = bool(add_stash or remove_stash or show_stash)
-    if (has_supply_operation or has_stash_operation) and not has_ingestion_input and not sync_choices and not daily_usage:
+    if (has_supply_operation or has_stash_operation) and not has_ingestion_input and not sync_choices and not daily_usage and not plot:
         return
 
     if daily_usage:
         logfile = _require_option("--csv", logfile)
         _print_daily_usage(logfile, daily_usage)
+        return
+
+    if plot:
+        logfile = _require_option("--csv", logfile)
+        _plot_logs(
+            logfile,
+            plot,
+            _parse_plot_time(plot_start, "--plot-start") if plot_start else None,
+            _parse_plot_time(plot_stop, "--plot-stop") if plot_stop else None,
+            plot_font,
+        )
         return
 
     mode = _resolve_input_mode(flags_mode, prompt_mode, dmenu_mode, bemenu_mode, False, bool(menu.MENU_TOOL_COMMAND))

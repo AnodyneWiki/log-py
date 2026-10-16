@@ -62,6 +62,13 @@ logpy --daily-usage --csv log.csv
 logpy --daily-usage=23.9.2026 --csv log.csv
 ```
 
+Plot the estimated blood plasma concentrations of the logged ingestions:
+
+```sh
+logpy --plot plot.png --csv log.csv
+logpy --plot plot.png --plot-start "2024-01-01 00:00" --plot-stop "2024-01-02 00:00" --plot-font Monospace,8 --csv log.csv
+```
+
 Dosage prompts accept simple arithmetic expressions for numeric amounts, e.g. entering `90 / 2` and unit `mg` logs `45mg`. Expressions also work in argument mode (a lone `100/3mg` or `50+10mg` is arithmetic, not a mixture) and may be prefixed with `~` to mark an approximate dosage, e.g. `~25*2mg` logs and posts `~50mg`. Dosage amounts are rounded to two decimals before being logged and posted, so `100/3mg` becomes `33.33mg`.
 
 Track virtual syringe and needle supply counts:
@@ -129,6 +136,8 @@ The "Userpage" action is shown only when `userpage` is set. When it is, every lo
 
 The "Statistics" action offers Daily, Weekly, Monthly, Yearly, and Total views. Each period lists its substances (total weight and ingestion count) and its routes of administration (ingestion count and the total weight taken via that route, in mg). Total skips the period list since there is only one.
 
+The "Plot" entry of the Statistics menu draws the estimated blood plasma concentrations of the logged ingestions over time, as `--plot` does from the command line. It asks for the time span (the last 24 hours, 3 days, week, month or year, all time, or a custom start and stop typed as free text such as `2 days ago` or `2025-12-04 10:00`), writes the image to `~/.config/logpy/plot.png` and, in menu modes, opens it with `xdg-open` when available. Every dose is run through a one-compartment pharmacokinetic model with first-order absorption (`src/log_py/plot.py`, a port of dkinplot.rb) and the curves of each substance are summed and drawn as filled areas in mg/L. Mixtures count as one dose per substance, dosages in g and ug are converted to mg, and dosages without a weight (volumes, ranges) are skipped.
+
 ## Flags
 
 | Flag | Short | Description |
@@ -144,6 +153,10 @@ The "Statistics" action offers Daily, Weekly, Monthly, Yearly, and Total views. 
 | `--stack-menu` | | start prompt/menu mode directly in the interactive supply stack editor |
 | `--stash-menu` | | start prompt/menu mode directly in the interactive stash editor |
 | `--daily-usage` | | sum usage for a day from the CSV log; optional value uses `d.m.y` format and defaults to today |
+| `--plot` | | plot the estimated blood plasma concentrations of the CSV log to this image file (PNG unless the extension says otherwise) |
+| `--plot-start` | | start of the plotted time span, e.g. `2 days ago` or `2025-12-04 10:00`; defaults to the first log |
+| `--plot-stop` | | end of the plotted time span; defaults to now |
+| `--plot-font` | | font of the plot, gnuplot style `name,size` (default `monospace,8`; the legend uses one point less) |
 | `--add-syringe` / `--add-syringes` | | add syringe stock to the virtual supply cache |
 | `--add-needle` / `--add-needles` | | add needle stock to the virtual supply cache |
 | `--remove-syringe` / `--remove-syringes` | | remove syringe stock from the virtual supply cache |
